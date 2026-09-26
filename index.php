@@ -1,167 +1,103 @@
 <?php
 
+// weak/slow target models can take a while — don't let PHP's own execution
+// time limit kill the request before curl's own timeout does. If your
+// hosting also sits behind nginx/Apache as a reverse proxy, its
+// proxy_read_timeout / Timeout setting may need raising too.
+set_time_limit(300);
+
+require __DIR__ . '/lib.php';
+
 $config = require __DIR__ . '/config.php';
 
-$game = null;
-$error = null;
-$rawResponse = null;
+$baseDir  = __DIR__;
+$iconsDir = $baseDir . '/assets/icons';
+$gamesDir = $baseDir . '/games';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+ensureDir($iconsDir);
+ensureDir($gamesDir);
+
+$view         = 'home';
+$error        = null;
+$missingSvgs  = [];
+$resultHtml   = null;
+$resultTitle  = null;
+
+// -----------------------------------------------------------------
+// View: play a previously saved game
+// -----------------------------------------------------------------
+if (isset($_GET['play'])) {
+
+    $view   = 'play';
+    $gameId = basename((string) $_GET['play']);
+
+    if (!preg_match('/^[A-Za-z0-9_\-]+$/', $gameId)) {
+        $error = 'شناسه بازی نامعتبر است.';
+    } else {
+        $html = loadGame($gamesDir, $gameId);
+        if ($html === null) {
+            $error = 'بازی مورد نظر پیدا نشد.';
+        } else {
+            $resultHtml  = $html;
+            $resultTitle = extractGameTitle($html, $gameId);
+        }
+    }
+
+// -----------------------------------------------------------------
+// Action: create a new game
+// -----------------------------------------------------------------
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    $view = 'create';
 
     $userPrompt = trim($_POST['prompt'] ?? '');
+    $count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
+    if ($count !== null) {
+        if ($count < 1)  $count = 1;
+        if ($count > 30) $count = 30;
+    }
 
     if ($userPrompt === '') {
         $error = 'لطفاً توضیح بازی را وارد کنید.';
     } else {
 
-        $systemPrompt = <<<'PROMPT'
-You are an expert HTML5 browser game developer.
+        $icons        = scanIconAssets($iconsDir);
+        $svgManifest  = buildSvgManifest($icons);
+        $systemPrompt = buildSystemPrompt($svgManifest);
 
-Your task is to CREATE A REAL PLAYABLE GAME.
-
-The user will describe a game in natural language.
-
-You MUST generate the complete game yourself.
-
-The final output must be a single self-contained HTML document.
-
-Requirements:
-
-- Use HTML5
-- Use CSS3
-- Use Vanilla JavaScript
-- Do not use React
-- Do not use Vue
-- Do not use Phaser
-- Do not use external libraries
-- Do not use external JavaScript files
-- Do not use external CSS files
-- Do not use external images
-- Do not use external network requests
-- The game must work completely offline
-- Use Canvas if it helps
-- The game must actually be playable
-- Include all game logic
-- Include visual design
-- Include animations where appropriate
-- Include score where appropriate
-- Include win/lose/completion state
-- Make the game responsive
-- Make it suitable for children when the prompt is educational
-
-IMPORTANT:
-
-Do not explain the code.
-
-Do not return Markdown.
-
-Do not return
-```html.
-
-Return ONLY the complete HTML document starting with <!DOCTYPE html>.
-
-The result must be directly executable inside a browser iframe.
-PROMPT;
-
-$payload = [
-'model' => $config['model'],
-'messages' => [
-[
-'role' => 'system',
-'content' => $systemPrompt,
-],
-[
-'role' => 'user',
-'content' => $userPrompt,
-],
-],
-];
-
-$ch = curl_init($config['api_url']);
-
-curl_setopt_array($ch, [
-CURLOPT_RETURNTRANSFER => true,
-CURLOPT_POST => true,
-CURLOPT_HTTPHEADER => [
-'Content-Type: application/json',
-'Authorization: Bearer ' . $config['api_key'],
-],
-CURLOPT_POSTFIELDS => json_encode($payload),
-CURLOPT_TIMEOUT => 120,
-]);
-
-$response = curl_exec($ch);
-
-if ($response === false) {
-$error = 'خطای ارتباط با API: ' . curl_error($ch);
-} else {
-
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-
-$rawResponse = $response;
-
-if ($httpCode < 200 || $httpCode >= 300) {
-
-$error = "API Error ($httpCode): " . $response;
-
-} else {
-
-$data = json_decode($response, true);
-
-if (!$data) {
-
-$error = 'پاسخ API قابل پردازش نیست.';
-
-} else {
-
-$text = null;
-
-// استخراج خروجی طبق فرمت استاندارد Chat Completions
-if (isset($data['choices'][0]['message']['content'])) {
-$text = $data['choices'][0]['message']['content'];
-} elseif (isset($data['output_text'])) {
-$text = $data['output_text'];
-}
-
-if (!$text) {
-$error = 'نتوانستم متن بازی تولیدشده را از پاسخ AI استخراج کنم.';
-} else {
-
-/*
-* اگر مدل اشتباهاً Markdown برگرداند،
-* wrapper را حذف می‌کنیم.
-*/
-
-$text = trim($text);
-
-$text = preg_replace('/^
-```html\s*/i', '', $text);
-                        $text = preg_replace('/^
-```\s*/', '', $text);
-$text = preg_replace('/\s*
-```$/', '', $text);
-
-                        $game = trim($text);
-
-                        /*
-                         * یک بررسی بسیار ساده:
-                         */
-
-                        if (
-                            stripos($game, '<!doctype html') === false &&
-                            stripos($game, '<html') === false
-                        ) {
-                            $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
-                            $game = null;
-                        }
-                    }
-                }
-            }
+        $userMessage = 'درخواست کاربر: "' . $userPrompt . '"';
+        if ($count !== null) {
+            $userMessage .= "\n" . 'تعداد سوال/آیتم پیشنهادی (در صورتی که این نوع بازی به آن نیاز دارد): ' . $count;
         }
 
-        curl_close($ch);
+        $apiResult = callAiApi($config, $systemPrompt, $userMessage);
+
+        if (!$apiResult['ok']) {
+            $error = $apiResult['error'];
+        } else {
+
+            $text = trim($apiResult['text']);
+            $text = preg_replace('/^```html\s*/i', '', $text);
+            $text = preg_replace('/^```\s*/', '', $text);
+            $text = preg_replace('/\s*```$/', '', $text);
+            $text = trim($text);
+
+            [$text, $missingSvgs] = applySvgPlaceholders($text, $icons);
+
+            if (stripos($text, '<!doctype html') === false && stripos($text, '<html') === false) {
+                $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
+            } else {
+                $resultHtml  = $text;
+                $resultTitle = extractGameTitle($text, $userPrompt);
+
+                $gameId = newGameId();
+                saveGame($gamesDir, $gameId, $resultHtml);
+            }
+        }
     }
 }
+
+$games = listGames($gamesDir);
 
 ?>
 <!DOCTYPE html>
@@ -170,13 +106,10 @@ $text = preg_replace('/\s*
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>AI Game Builder POC</title>
+    <title>AI Game Builder</title>
 
     <style>
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         body {
             margin: 0;
@@ -191,9 +124,7 @@ $text = preg_replace('/\s*
             padding: 30px;
         }
 
-        h1 {
-            margin-top: 0;
-        }
+        h1 { margin-top: 0; }
 
         .description {
             color: #9ca3af;
@@ -202,7 +133,7 @@ $text = preg_replace('/\s*
 
         textarea {
             width: 100%;
-            min-height: 150px;
+            min-height: 130px;
             padding: 18px;
             border-radius: 12px;
             border: 1px solid #374151;
@@ -213,8 +144,28 @@ $text = preg_replace('/\s*
             outline: none;
         }
 
+        .count-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .count-row label { color: #9ca3af; }
+
+        .count-row input {
+            width: 90px;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #374151;
+            background: #1f2937;
+            color: white;
+            font-size: 16px;
+        }
+
         button {
             margin-top: 15px;
+            margin-inline-end: 10px;
             padding: 14px 28px;
             border: 0;
             border-radius: 10px;
@@ -224,9 +175,10 @@ $text = preg_replace('/\s*
             cursor: pointer;
         }
 
-        button:hover {
-            background: #4f46e5;
-        }
+        button:hover { background: #4f46e5; }
+
+        button.secondary { background: #10b981; }
+        button.secondary:hover { background: #059669; }
 
         .error {
             margin-top: 20px;
@@ -239,12 +191,23 @@ $text = preg_replace('/\s*
             white-space: pre-wrap;
         }
 
-        .game-container {
-            margin-top: 30px;
+        .warning {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            background: #78350f;
+            color: #fde68a;
         }
+
+        .game-container { margin-top: 30px; }
 
         .game-header {
             margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
         }
 
         .game-frame {
@@ -255,10 +218,47 @@ $text = preg_replace('/\s*
             background: white;
         }
 
-        .loading {
-            display: inline-block;
-            margin-right: 10px;
+        .games-list { margin-top: 50px; }
+
+        .games-list h2 {
+            border-bottom: 1px solid #374151;
+            padding-bottom: 10px;
         }
+
+        .games-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+
+        .game-card {
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 16px;
+            text-decoration: none;
+            color: white;
+            display: block;
+        }
+
+        .game-card:hover { border-color: #6366f1; }
+
+        .game-card .title { font-weight: bold; margin-bottom: 6px; }
+
+        .game-card .meta {
+            color: #9ca3af;
+            font-size: 13px;
+        }
+
+        .back-link {
+            display: inline-block;
+            margin-bottom: 15px;
+            color: #a5b4fc;
+            text-decoration: none;
+        }
+
+        .empty { color: #6b7280; margin-top: 20px; }
     </style>
 </head>
 
@@ -266,55 +266,122 @@ $text = preg_replace('/\s*
 
 <div class="container">
 
-    <h1>🎮 AI Game Builder — POC</h1>
+    <h1>🎮 AI Game Builder</h1>
 
-    <div class="description">
-        توضیح بده چه بازی‌ای می‌خواهی؛ هوش مصنوعی باید بازی واقعی را بسازد.
-    </div>
+    <?php if ($view === 'play'): ?>
+        <a class="back-link" href="index.php">← بازگشت به خانه</a>
+    <?php else: ?>
 
-    <form method="POST">
-
-        <textarea
-            name="prompt"
-            placeholder="مثلاً: یک بازی جمع و تفریق برای کودکان ۸ ساله بساز..."
-        ><?= htmlspecialchars($_POST['prompt'] ?? '') ?></textarea>
-
-        <br>
-
-        <button type="submit">
-            🚀 ساخت بازی
-        </button>
-
-    </form>
-
-    <?php if ($error): ?>
-
-        <div class="error">
-            <?= htmlspecialchars($error) ?>
+        <div class="description">
+            توضیح بده چه بازی‌ای می‌خواهی؛ هوش مصنوعی کل بازی (HTML، CSS، JS) را مستقیماً می‌سازد و فقط از آیکون‌های آماده‌ی پروژه استفاده می‌کند.
         </div>
+
+        <form method="POST">
+
+            <textarea
+                name="prompt"
+                placeholder="مثلاً: کوییز میوه‌ها برای کودکان ۵ ساله که هنوز خواندن و نوشتن بلد نیستند..."
+            ><?= htmlspecialchars($_POST['prompt'] ?? '') ?></textarea>
+
+            <div class="count-row">
+                <label for="count">تعداد سوال / آیتم (اختیاری):</label>
+                <input
+                    type="number"
+                    id="count"
+                    name="count"
+                    min="1"
+                    max="30"
+                    value="<?= htmlspecialchars($_POST['count'] ?? '') ?>"
+                    placeholder="مثلاً 5"
+                >
+            </div>
+
+            <button type="submit">🚀 ساخت بازی</button>
+
+        </form>
 
     <?php endif; ?>
 
+    <?php if ($error): ?>
+        <div class="error"><?= htmlspecialchars($error) ?></div>
+    <?php endif; ?>
 
-    <?php if ($game): ?>
+    <?php if (!empty($missingSvgs)): ?>
+        <div class="warning">
+            ⚠️ هوش مصنوعی به این آیکون‌ها اشاره کرده که در پوشه‌ی assets/icons وجود ندارند (نادیده گرفته شدند):
+            <?= htmlspecialchars(implode('، ', $missingSvgs)) ?>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($resultHtml): ?>
 
         <div class="game-container">
 
             <div class="game-header">
-                <h2>🎮 بازی تولید شده</h2>
+                <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?></h2>
+                <button type="button" class="secondary" onclick="downloadGame()">
+                    ⬇️ دریافت خروجی (HTML)
+                </button>
             </div>
 
             <iframe
                 class="game-frame"
                 sandbox="allow-scripts"
-                srcdoc="<?= htmlspecialchars($game, ENT_QUOTES, 'UTF-8') ?>"
+                srcdoc="<?= htmlspecialchars($resultHtml, ENT_QUOTES, 'UTF-8') ?>"
             ></iframe>
+
+            <input type="hidden" id="gameData" value="<?= base64_encode($resultHtml) ?>">
 
         </div>
 
     <?php endif; ?>
 
+    <?php if ($view !== 'play'): ?>
+
+        <div class="games-list">
+            <h2>بازی‌های ساخته‌شده</h2>
+
+            <?php if (empty($games)): ?>
+                <div class="empty">هنوز هیچ بازی‌ای ساخته نشده است.</div>
+            <?php else: ?>
+                <div class="games-grid">
+                    <?php foreach ($games as $g): ?>
+                        <a class="game-card" href="index.php?play=<?= urlencode($g['id']) ?>">
+                            <div class="title"><?= htmlspecialchars($g['title']) ?></div>
+                            <div class="meta"><?= htmlspecialchars(date('Y-m-d H:i', $g['created_at'])) ?></div>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+        </div>
+
+    <?php endif; ?>
+
 </div>
+
+<script>
+function downloadGame() {
+    var field = document.getElementById('gameData');
+    if (!field) return;
+
+    var bytes = Uint8Array.from(atob(field.value), function (c) {
+        return c.charCodeAt(0);
+    });
+    var html = new TextDecoder('utf-8').decode(bytes);
+
+    var blob = new Blob([html], { type: 'text/html' });
+    var url = URL.createObjectURL(blob);
+
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'game.html';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    URL.revokeObjectURL(url);
+}
+</script>
 
 </body>
 </html>
