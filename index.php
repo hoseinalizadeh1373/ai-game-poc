@@ -10,18 +10,21 @@ require __DIR__ . '/lib.php';
 
 $config = require __DIR__ . '/config.php';
 
-$baseDir  = __DIR__;
-$iconsDir = $baseDir . '/assets/icons';
-$gamesDir = $baseDir . '/games';
+$baseDir   = __DIR__;
+$assetsDir = $baseDir . '/assets';
+$iconsDir  = $assetsDir . '/icons';
+$gamesDir  = $baseDir . '/games';
 
 ensureDir($iconsDir);
 ensureDir($gamesDir);
 
-$view         = 'home';
-$error        = null;
-$missingSvgs  = [];
-$resultHtml   = null;
-$resultTitle  = null;
+$view            = 'home';
+$error           = null;
+$missingSvgs     = [];
+$handDrawnCount  = 0;
+$brokenSvgCount  = 0;
+$resultHtml      = null;
+$resultTitle     = null;
 
 // -----------------------------------------------------------------
 // View: play a previously saved game
@@ -61,9 +64,12 @@ if (isset($_GET['play'])) {
         $error = 'لطفاً توضیح بازی را وارد کنید.';
     } else {
 
-        $icons        = scanIconAssets($iconsDir);
-        $svgManifest  = buildSvgManifest($icons);
-        $systemPrompt = buildSystemPrompt($svgManifest);
+        $icons          = scanIconAssets($iconsDir);
+        $svgManifest    = buildSvgManifest($icons);
+        $baseCss        = loadBaseCss($assetsDir);
+        $baseJs         = loadBaseJs($assetsDir);
+        $cssJsManifest  = buildCssJsManifest($baseCss, $baseJs);
+        $systemPrompt   = buildSystemPrompt($svgManifest, $cssJsManifest);
 
         $userMessage = 'درخواست کاربر: "' . $userPrompt . '"';
         if ($count !== null) {
@@ -82,11 +88,22 @@ if (isset($_GET['play'])) {
             $text = preg_replace('/\s*```$/', '', $text);
             $text = trim($text);
 
+            // must run BEFORE substitution: a compliant model's raw output
+            // never contains a literal "<svg" tag (only {{SVG:id}} placeholders)
+            $handDrawnCount = countHandDrawnSvg($text);
+
             [$text, $missingSvgs] = applySvgPlaceholders($text, $icons);
+
+            // must run AFTER substitution: anything still matching "{{SVG"
+            // at this point means the placeholder was built dynamically
+            // (e.g. with a JS variable) and could never be resolved
+            $brokenSvgCount = countBrokenSvgPlaceholders($text);
 
             if (stripos($text, '<!doctype html') === false && stripos($text, '<html') === false) {
                 $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
             } else {
+                $text = injectSharedAssets($text, $baseCss, $baseJs);
+
                 $resultHtml  = $text;
                 $resultTitle = extractGameTitle($text, $userPrompt);
 
@@ -310,6 +327,18 @@ $games = listGames($gamesDir);
         <div class="warning">
             ⚠️ هوش مصنوعی به این آیکون‌ها اشاره کرده که در پوشه‌ی assets/icons وجود ندارند (نادیده گرفته شدند):
             <?= htmlspecialchars(implode('، ', $missingSvgs)) ?>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($handDrawnCount > 0): ?>
+        <div class="warning">
+            ⚠️ هوش مصنوعی <?= (int) $handDrawnCount ?> مورد SVG را خودش دستی کشیده، به‌جای استفاده از آیکون‌های آماده‌ی <code>assets/icons</code>. بازی همچنان کار می‌کند، ولی این یعنی مدل قانون استفاده‌ی مجدد از آیکون را رعایت نکرده.
+        </div>
+    <?php endif; ?>
+
+    <?php if ($brokenSvgCount > 0): ?>
+        <div class="error">
+            ⚠️ <?= (int) $brokenSvgCount ?> مورد placeholder آیکون به‌درستی جایگزین نشده (احتمالاً مدل آن را به‌صورت پویا در جاوااسکریپت ساخته، مثلاً <code>{{SVG:$&#123;item.id&#125;}}</code> به‌جای نوشتن مستقیم <code>{{SVG:cat}}</code>). این یعنی به‌جای آیکون، متن خام <code>{{SVG:...}}</code> روی صفحه‌ی بازی دیده می‌شود.
         </div>
     <?php endif; ?>
 

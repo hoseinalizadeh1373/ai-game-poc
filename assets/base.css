@@ -1,0 +1,31 @@
+/* Shared base styles auto-injected into every generated game.
+   Each documented block below is announced to the target AI in the
+   prompt via the "@class" comment convention — add a new utility here
+   with the same comment style and it appears automatically next time. */
+
+*{box-sizing:border-box}
+body{margin:0;font-family:Tahoma,Arial,sans-serif;-webkit-tap-highlight-color:transparent}
+
+/* @class .btn — a large, colorful, rounded, finger-friendly button for any clickable action */
+.btn{display:inline-block;padding:14px 28px;border:0;border-radius:14px;background:#6366f1;color:#fff;font-size:18px;font-weight:bold;cursor:pointer;user-select:none;transition:transform .1s}
+.btn:active{transform:scale(.95)}
+
+/* @class .card — a rounded, shadowed content box (e.g. one quiz option or one puzzle piece slot) */
+.card{border-radius:16px;background:#fff;box-shadow:0 4px 14px rgba(0,0,0,.15);padding:14px;cursor:pointer;transition:transform .15s}
+.card:hover{transform:translateY(-4px)}
+
+/* @class .overlay — a full-screen centered layer for win/lose/level-complete messages */
+.overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:rgba(0,0,0,.55);color:#fff;text-align:center;padding:20px;z-index:50}
+.overlay.hidden{display:none}
+
+/* @class .correct-flash — apply briefly to an element to show a correct-answer pulse */
+.correct-flash{animation:aiGamePop .5s ease}
+/* @class .wrong-flash — apply briefly to an element to show a wrong-answer shake */
+.wrong-flash{animation:aiGameShake .4s ease}
+
+@keyframes aiGamePop{0%{transform:scale(1)}40%{transform:scale(1.15)}100%{transform:scale(1)}}
+@keyframes aiGameShake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+
+/* @class .confetti-piece — one falling square, spawned by the launchConfetti() JS helper */
+.confetti-piece{position:fixed;top:-10px;width:10px;height:10px;border-radius:2px;pointer-events:none;animation:aiGameFall linear forwards}
+@keyframes aiGameFall{to{transform:translateY(110vh) rotate(360deg);opacity:.2}}

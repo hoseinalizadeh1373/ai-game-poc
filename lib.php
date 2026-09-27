@@ -125,11 +125,124 @@ function applySvgPlaceholders(string $html, array $icons): array
     return [$result, array_values(array_unique($missing))];
 }
 
+/**
+ * The raw model output (before placeholder substitution) should NEVER
+ * contain a literal "<svg" tag if the model followed the rules — a
+ * compliant model only ever writes {{SVG:id}} placeholders, and real
+ * <svg> tags only appear after our own substitution runs. So any "<svg"
+ * found in the raw text is proof the model hand-drew an icon instead of
+ * reusing the library — a 100% reliable check, not a guess.
+ *
+ * @return int number of hand-drawn <svg> tags found in the raw output
+ */
+function countHandDrawnSvg(string $rawModelOutput): int
+{
+    return preg_match_all('/<svg\b/i', $rawModelOutput);
+}
+
+/**
+ * A successful applySvgPlaceholders() run consumes every {{SVG:id}} it
+ * finds — valid ones become real markup, invalid ids become an HTML
+ * comment. So after substitution, the literal text "{{SVG" should never
+ * remain anywhere in the output. If it does, something didn't match the
+ * expected static pattern at all — most commonly the model built the
+ * placeholder dynamically at runtime, e.g. `{{SVG:${item.id}}}`, which
+ * still contains the unresolved variable and can never be matched. This
+ * catches that whole bug class (and any future variant) without needing
+ * to know its exact shape in advance.
+ *
+ * @return int number of leftover, unresolved "{{SVG" fragments
+ */
+function countBrokenSvgPlaceholders(string $htmlAfterSubstitution): int
+{
+    return preg_match_all('/\{\{\s*SVG\b/i', $htmlAfterSubstitution);
+}
+
+// ---------------------------------------------------------------------
+// Shared base CSS/JS (assets/base.css, assets/base.js)
+//
+// Unlike icons (one file = one id), these are two single files with
+// several utilities each. To keep the same "just document it in a
+// comment and it's picked up automatically" philosophy, every reusable
+// class/function is announced with a "@class" / "@helper" comment right
+// above it — the manifest builder below extracts those comments with a
+// regex, so adding a new shared utility never requires touching lib.php.
+// ---------------------------------------------------------------------
+
+function loadBaseCss(string $assetsDir): string
+{
+    $file = $assetsDir . '/base.css';
+    return file_exists($file) ? trim(file_get_contents($file)) : '';
+}
+
+function loadBaseJs(string $assetsDir): string
+{
+    $file = $assetsDir . '/base.js';
+    return file_exists($file) ? trim(file_get_contents($file)) : '';
+}
+
+/**
+ * Extracts "/* @class .name — description *\/" lines from base.css and
+ * "// @helper name(args) — description" lines from base.js into one
+ * compact manifest for the prompt.
+ */
+function buildCssJsManifest(string $css, string $js): string
+{
+    $lines = [];
+
+    if (preg_match_all('/@class\s+(\S+)\s*—\s*(.+?)\*\//u', $css, $m, PREG_SET_ORDER)) {
+        foreach ($m as $match) {
+            $lines[] = '- ' . trim($match[1]) . ' (CSS class): ' . trim($match[2]);
+        }
+    }
+
+    if (preg_match_all('/@helper\s+([a-zA-Z0-9_]+\([^)]*\))\s*—\s*(.+)/u', $js, $m, PREG_SET_ORDER)) {
+        foreach ($m as $match) {
+            $lines[] = '- ' . trim($match[1]) . ' (JS function): ' . trim($match[2]);
+        }
+    }
+
+    return implode("\n", $lines);
+}
+
+/**
+ * Injects the shared CSS and JS into the very start of <head>, so they
+ * are defined before anything the AI wrote (wherever it placed its own
+ * <style>/<script>). This runs unconditionally — regardless of whether
+ * the AI actually used any of these classes/functions — so the final
+ * file is guaranteed consistent and still 100% self-contained (no
+ * external <link>/<script src>, everything inlined once, at save time).
+ */
+function injectSharedAssets(string $html, string $css, string $js): string
+{
+    $inject = '';
+    if ($css !== '') {
+        $inject .= "<style>\n" . $css . "\n</style>\n";
+    }
+    if ($js !== '') {
+        $inject .= "<script>\n" . $js . "\n</script>\n";
+    }
+    if ($inject === '') {
+        return $html;
+    }
+
+    if (preg_match('/<head[^>]*>/i', $html)) {
+        return preg_replace('/(<head[^>]*>)/i', '$1' . "\n" . $inject, $html, 1);
+    }
+
+    // no <head> found (model skipped it) — fall back to right after <html ...> or the very top
+    if (preg_match('/<html[^>]*>/i', $html)) {
+        return preg_replace('/(<html[^>]*>)/i', '$1' . "\n<head>" . $inject . "</head>\n", $html, 1);
+    }
+
+    return $inject . $html;
+}
+
 // ---------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------
 
-function buildSystemPrompt(string $svgManifest): string
+function buildSystemPrompt(string $svgManifest, string $cssJsManifest): string
 {
     $template = <<<'PROMPT'
 You are an expert HTML5 browser game developer for children's educational games.
@@ -152,41 +265,92 @@ TECHNICAL RULES
 - Responsive layout (works on both desktop and mobile).
 - Visual style must be simple, colorful, and friendly for children.
 
-GRAPHICS RULE — IMPORTANT
-You do NOT draw most graphics yourself. A fixed set of ready-made icons already exists on the server. Whenever you need one of them, do not write <svg> code — write this exact placeholder text at that spot instead:
+GRAPHICS RULE — CRITICAL, READ THIS TWICE
 
-{{SVG:ID}}
+A fixed set of ready-made SVG icon files already exists inside the project.
 
-"ID" must be exactly one of the ids below (lowercase, same spelling/hyphens, no changes). The server replaces each placeholder with the real icon before the game is shown, so the final game still works 100% offline.
+ICON DIRECTORY
+
+assets/icons/
+
+You do NOT draw graphics yourself.
+
+Whenever you need an icon, use a normal HTML image tag that points directly to the SVG file.
+
+Correct format:
+
+<img src="assets/icons/cat.svg" alt="cat">
+
+or
+
+<img src="assets/icons/apple.svg" alt="apple" class="icon">
+
+The server will NOT replace placeholders.
+The SVG files already exist on disk and must be referenced directly.
 
 AVAILABLE ICON IDS
+
 ___SVG_MANIFEST___
 
-HOW TO USE THE PLACEHOLDER
-1. Use it like a small inline image, e.g.: <div class="apple-box">{{SVG:apple}}</div>
-2. Control its size with CSS on its parent element (width/height) — it scales automatically (viewBox-based).
-3. Control its color with CSS "color: ..." on its parent element — it uses currentColor.
-4. NEVER invent an id that is not in the list above.
-5. NEVER hand-write <svg>...</svg> markup for anything that already exists in the list above — always use the placeholder, to keep your output short.
-6. Do not request the same icon id under a different spelling — reuse the existing id exactly as listed; never create a near-duplicate.
-7. Only if the game truly needs a visual that is NOT in the list, you may draw one very small, simple custom SVG or CSS shape yourself. Keep it minimal.
-8. NEVER write the placeholder as a quoted JavaScript string, e.g. NEVER do `icons: ["{{SVG:cat}}", "{{SVG:dog}}"]`. The real icon markup contains double quotes and WILL break a JS string like that. Instead, either (a) put the placeholder directly as HTML content, e.g. `<div class="icon-slot" data-animal="cat">{{SVG:cat}}</div>`, and read/compare `data-animal` in JavaScript instead of the icon markup itself, or (b) if you truly need it in a JS array, wrap each entry in backticks, e.g. `icons: [\`{{SVG:cat}}\`, \`{{SVG:dog}}\`]`, never plain double or single quotes.
+RULES
 
-CODE SIZE RULES — IMPORTANT
-- Write compact code. No comments. No unnecessary blank lines or unused CSS/JS.
-- Reuse CSS classes instead of repeating inline styles.
-- If the game needs many icons of the same kind, write one small JavaScript function/array to render them, instead of repeating similar HTML blocks by hand.
+1. ONLY use icon ids from the AVAILABLE ICON IDS list above.
+2. NEVER invent a new icon id.
+3. NEVER change the spelling of an icon id.
+4. NEVER generate SVG markup yourself.
+5. NEVER write <svg>...</svg>.
+6. NEVER use external images.
+7. NEVER use base64 images.
+8. NEVER use placeholder formats such as:
+   {{SVG:cat}}
+   {{SVG:apple}}
+9. To use an icon, create the path exactly like this:
 
-CORRECT EXAMPLE
-User asked: "a game where the child taps the apple among 3 fruits"
-Correct: <div class="fruit" data-correct="true">{{SVG:apple}}</div><div class="fruit">{{SVG:banana}}</div><div class="fruit">{{SVG:grape}}</div>
-Wrong (never do this): drawing a full custom <svg><path d="..."/></svg> for the apple yourself.
+   assets/icons/ID.svg
+
+10. Examples:
+
+   <img src="assets/icons/cat.svg" alt="cat">
+   <img src="assets/icons/dog.svg" alt="dog">
+   <img src="assets/icons/apple.svg" alt="apple">
+
+11. If an icon needs custom sizing, use CSS or inline styles:
+
+   <img src="assets/icons/cat.svg" alt="cat" style="width:100px;height:100px;">
+
+12. If the game dynamically switches between icons at runtime, use a lookup object with full paths:
+
+   const icons = {
+       cat: 'assets/icons/cat.svg',
+       dog: 'assets/icons/dog.svg',
+       bird: 'assets/icons/bird.svg'
+   };
+
+13. Every icon path must be written as a static string.
+14. Never construct icon file names dynamically from user input.
+15. Every icon referenced in the game must come from the AVAILABLE ICON IDS list.
+
+BEFORE YOU ANSWER — SELF CHECK
+
+- Search your draft for "<svg". If found, remove it.
+- Search your draft for "{{SVG:". If found, replace it with an img tag.
+- Verify that every image path follows:
+
+  assets/icons/ID.svg
+
+- Verify that every ID exists in the AVAILABLE ICON IDS list.
 
 FINAL REMINDER
-Return ONLY the final HTML document. Start directly with <!DOCTYPE html>. Nothing before it, nothing after it.
+
+Use ONLY SVG files from assets/icons/.
+Never generate SVG code yourself.
+Never use placeholders.
+Return only the final HTML document.
 PROMPT;
 
-    return str_replace('___SVG_MANIFEST___', $svgManifest, $template);
+    $prompt = str_replace('___SVG_MANIFEST___', $svgManifest, $template);
+    $prompt = str_replace('___CSSJS_MANIFEST___', $cssJsManifest, $prompt);
+    return $prompt;
 }
 
 // ---------------------------------------------------------------------
