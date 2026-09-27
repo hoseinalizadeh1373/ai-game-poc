@@ -213,29 +213,83 @@ function buildCssJsManifest(string $css, string $js): string
  * file is guaranteed consistent and still 100% self-contained (no
  * external <link>/<script src>, everything inlined once, at save time).
  */
+/**
+ * Injects the shared JS at the very START of <head> (so functions/vars
+ * are defined before anything the AI wrote runs), and the shared CSS at
+ * the very END of <head> (right before </head>).
+ *
+ * The CSS position matters: a weak model sometimes ignores the "do not
+ * redefine these classes" rule and declares its own .overlay/.btn/etc.
+ * with the same name. In CSS, when two rules target the same selector
+ * with equal specificity, whichever rule appears LAST in the document
+ * wins, property by property — so if our rule were injected first and
+ * the model's own (incomplete/conflicting) rule came later, the model's
+ * version would silently win on every property it happens to set, while
+ * our properties survive on anything the model's rule left out. That
+ * mismatch is exactly what produces invisible white-text-on-white
+ * overlays in practice (our .overlay sets color:#fff on a dark
+ * background; a model's later .overlay redefinition changes only the
+ * background to white, and our still-active white text disappears).
+ * Placing our CSS last in <head> instead makes our rules win the
+ * cascade automatically, with no !important needed.
+ *
+ * This runs unconditionally — regardless of whether the AI actually
+ * used any of these classes/functions — so the final file is guaranteed
+ * consistent and still 100% self-contained (no external <link>/<script
+ * src>, everything inlined once, at save time).
+ */
 function injectSharedAssets(string $html, string $css, string $js): string
 {
-    $inject = '';
-    if ($css !== '') {
-        $inject .= "<style>\n" . $css . "\n</style>\n";
-    }
     if ($js !== '') {
-        $inject .= "<script>\n" . $js . "\n</script>\n";
-    }
-    if ($inject === '') {
-        return $html;
-    }
-
-    if (preg_match('/<head[^>]*>/i', $html)) {
-        return preg_replace('/(<head[^>]*>)/i', '$1' . "\n" . $inject, $html, 1);
-    }
-
-    // no <head> found (model skipped it) — fall back to right after <html ...> or the very top
-    if (preg_match('/<html[^>]*>/i', $html)) {
-        return preg_replace('/(<html[^>]*>)/i', '$1' . "\n<head>" . $inject . "</head>\n", $html, 1);
+        $jsBlock = "<script>\n" . $js . "\n</script>\n";
+        if (preg_match('/<head[^>]*>/i', $html)) {
+            $html = preg_replace('/(<head[^>]*>)/i', '$1' . "\n" . $jsBlock, $html, 1);
+        } elseif (preg_match('/<html[^>]*>/i', $html)) {
+            $html = preg_replace('/(<html[^>]*>)/i', '$1' . "\n<head>" . $jsBlock . "</head>\n", $html, 1);
+        } else {
+            $html = $jsBlock . $html;
+        }
     }
 
-    return $inject . $html;
+    if ($css !== '') {
+        $cssBlock = "<style>\n" . $css . "\n</style>\n";
+        if (preg_match('/<\/head>/i', $html)) {
+            $html = preg_replace('/(<\/head>)/i', $cssBlock . '$1', $html, 1);
+        } elseif (preg_match('/<head[^>]*>/i', $html)) {
+            // <head> opened but never closed (malformed) — best we can do
+            $html = preg_replace('/(<head[^>]*>)/i', '$1' . "\n" . $cssBlock, $html, 1);
+        } else {
+            $html = $cssBlock . $html;
+        }
+    }
+
+    return $html;
+}
+
+/**
+ * Detects a weak model redeclaring one of our shared CSS classes with
+ * its own conflicting rule instead of reusing it. Runs on the RAW model
+ * output, before injection, so it only flags rules the model itself
+ * wrote (not our own injected copy).
+ *
+ * @return string[] shared class names the model redeclared
+ */
+function detectSharedClassCollisions(string $rawModelOutput, string $baseCss): array
+{
+    $sharedClasses = [];
+    if (preg_match_all('/@class\s+(\.[a-zA-Z0-9_-]+)/', $baseCss, $m)) {
+        $sharedClasses = $m[1];
+    }
+
+    $collisions = [];
+    foreach ($sharedClasses as $class) {
+        $pattern = '/' . preg_quote($class, '/') . '\s*(,|\{)/';
+        if (preg_match($pattern, $rawModelOutput)) {
+            $collisions[] = $class;
+        }
+    }
+
+    return $collisions;
 }
 
 // ---------------------------------------------------------------------
@@ -371,10 +425,12 @@ PROMPT;
 /**
  * @return array{ok:bool, text:?string, error:?string}
  */
-function callAiApi(array $config, string $systemPrompt, string $userMessage): array
+function callAiApi(array $config, string $systemPrompt, string $userMessage, ?string $modelOverride = null): array
 {
+    $model = $modelOverride ?: ($config['model'] ?? 'gapgpt-qwen-3.6');
+
     $payload = [
-        'model' => $config['model'],
+        'model' => $model,
         'messages' => [
             ['role' => 'system', 'content' => $systemPrompt],
             ['role' => 'user', 'content' => $userMessage],
@@ -391,9 +447,6 @@ function callAiApi(array $config, string $systemPrompt, string $userMessage): ar
             'Authorization: Bearer ' . $config['api_key'],
         ],
         CURLOPT_POSTFIELDS => json_encode($payload),
-        // a single raw-HTML response is far smaller/faster to generate than
-        // the earlier JSON+Base64 shape, but a slow target model can still
-        // take a while — keep this generous.
         CURLOPT_TIMEOUT => 280,
         CURLOPT_CONNECTTIMEOUT => 20,
     ]);

@@ -23,8 +23,10 @@ $error           = null;
 $missingSvgs     = [];
 $handDrawnCount  = 0;
 $brokenSvgCount  = 0;
+$classCollisions = [];
 $resultHtml      = null;
 $resultTitle     = null;
+$gameId          = null;
 
 // -----------------------------------------------------------------
 // View: play a previously saved game
@@ -43,7 +45,18 @@ if (isset($_GET['play'])) {
         } else {
             $resultHtml  = $html;
             $resultTitle = extractGameTitle($html, $gameId);
-            $gamePrompt  = getGamePrompt($gamesDir, $gameId); 
+            $gamePrompt  = getGamePrompt($gamesDir, $gameId);
+
+            // carried over from the AJAX create redirect (see below) so
+            // warnings from the generation that just happened aren't lost
+            if (!empty($_GET['missing'])) {
+                $missingSvgs = array_filter(explode(',', (string) $_GET['missing']));
+            }
+            $handDrawnCount  = isset($_GET['handdrawn']) ? (int) $_GET['handdrawn'] : 0;
+            $brokenSvgCount  = isset($_GET['broken']) ? (int) $_GET['broken'] : 0;
+            if (!empty($_GET['collide'])) {
+                $classCollisions = array_filter(explode(',', (string) $_GET['collide']));
+            }
         }
     }
 
@@ -54,8 +67,15 @@ if (isset($_GET['play'])) {
 
     $view = 'create';
 
-    $userPrompt = trim($_POST['prompt'] ?? '');
-    $count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
+$userPrompt = trim($_POST['prompt'] ?? '');
+$count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
+$selectedModel = $_POST['model'] ?? 'gapgpt-qwen-3.6'; // مقدار پیش‌فرض
+
+// اعتبارسنجی مدل
+$allowedModels = ['gapgpt-qwen-3.6', 'claude-fable-5', 'claude-sonnet-5', 'gpt-6-sol', 'deepseek-v4.1-flash'];
+if (!in_array($selectedModel, $allowedModels, true)) {
+    $selectedModel = 'gapgpt-qwen-3.6';
+}
     if ($count !== null) {
         if ($count < 1)  $count = 1;
         if ($count > 30) $count = 30;
@@ -77,8 +97,7 @@ if (isset($_GET['play'])) {
             $userMessage .= "\n" . 'تعداد سوال/آیتم پیشنهادی (در صورتی که این نوع بازی به آن نیاز دارد): ' . $count;
         }
 
-        $apiResult = callAiApi($config, $systemPrompt, $userMessage);
-
+        $apiResult = callAiApi($config, $systemPrompt, $userMessage, $selectedModel);
         if (!$apiResult['ok']) {
             $error = $apiResult['error'];
         } else {
@@ -100,6 +119,10 @@ if (isset($_GET['play'])) {
             // (e.g. with a JS variable) and could never be resolved
             $brokenSvgCount = countBrokenSvgPlaceholders($text);
 
+            // must run on the RAW model output, before we inject our own
+            // <style> — otherwise we'd also match our own shared rules
+            $classCollisions = detectSharedClassCollisions($text, $baseCss);
+
             if (stripos($text, '<!doctype html') === false && stripos($text, '<html') === false) {
                 $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
             } else {
@@ -114,6 +137,27 @@ if (isset($_GET['play'])) {
             }
         }
     }
+
+    // AJAX requests (see the fetch in the page's own <script> below) get a
+    // small JSON response instead of the full page — the previous version
+    // returned full HTML that the frontend ignored, which is why results
+    // and errors from a submission never actually reached the user.
+    $isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH'])
+        && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+
+    if ($isAjax) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok'              => $error === null,
+            'error'           => $error,
+            'gameId'          => $gameId,
+            'missingSvgs'     => $missingSvgs,
+            'handDrawnCount'  => $handDrawnCount,
+            'brokenSvgCount'  => $brokenSvgCount,
+            'classCollisions' => $classCollisions,
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 }
 
 $games = listGames($gamesDir);
@@ -126,7 +170,7 @@ $games = listGames($gamesDir);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Game Builder</title>
-
+    <script src="assets/axios.min.js"></script>
     <style>
         * { box-sizing: border-box; }
 
@@ -295,29 +339,44 @@ $games = listGames($gamesDir);
             توضیح بده چه بازی‌ای می‌خواهی؛ هوش مصنوعی کل بازی (HTML، CSS، JS) را مستقیماً می‌سازد و فقط از آیکون‌های آماده‌ی پروژه استفاده می‌کند.
         </div>
 
-        <form method="POST">
+<form id="createGameForm">
 
-            <textarea
-                name="prompt"
-                placeholder="مثلاً: کوییز میوه‌ها برای کودکان ۵ ساله که هنوز خواندن و نوشتن بلد نیستند..."
-            ><?= htmlspecialchars($_POST['prompt'] ?? '') ?></textarea>
+    <div style="margin-bottom: 15px;">
+        <label for="model" style="color:#9ca3af; display:block; margin-bottom:6px;">انتخاب مدل هوش مصنوعی:</label>
+        <select name="model" id="model" style="width:100%; padding:12px; border-radius:8px; border:1px solid #374151; background:#1f2937; color:white; font-size:16px;">
+            <option value="gapgpt-qwen-3.6">Qwen 3.6 (پیشنهادی)</option>
+            <option value="claude-fable-5">Claude Fable 5</option>
+            <option value="claude-sonnet-5">Claude Sonnet 5</option>
+            <option value="gpt-6-sol">GPT-6 Sol</option>
+            <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash</option>
+        </select>
+    </div>
 
-            <div class="count-row">
-                <label for="count">تعداد سوال / آیتم (اختیاری):</label>
-                <input
-                    type="number"
-                    id="count"
-                    name="count"
-                    min="1"
-                    max="30"
-                    value="<?= htmlspecialchars($_POST['count'] ?? '') ?>"
-                    placeholder="مثلاً 5"
-                >
-            </div>
+    <textarea
+        name="prompt"
+        id="prompt"
+        placeholder="مثلاً: کوییز میوه‌ها برای کودکان ۵ ساله که هنوز خواندن و نوشتن بلد نیستند..."
+    ></textarea>
 
-            <button type="submit">🚀 ساخت بازی</button>
+    <div class="count-row">
+        <label for="count">تعداد سوال / آیتم (اختیاری):</label>
+        <input
+            type="number"
+            id="count"
+            name="count"
+            min="1"
+            max="30"
+            placeholder="مثلاً 5"
+        >
+    </div>
 
-        </form>
+    <button type="submit" id="submitBtn">🚀 ساخت بازی</button>
+
+    <div id="loading" style="display:none; margin-top:12px; color:#9ca3af;">
+        ⏳ در حال ساخت بازی... (ممکن است تا چند دقیقه طول بکشد)
+    </div>
+    <div id="ajaxError" class="error" style="display:none;"></div>
+</form>
 
     <?php endif; ?>
 
@@ -341,6 +400,13 @@ $games = listGames($gamesDir);
     <?php if ($brokenSvgCount > 0): ?>
         <div class="error">
             ⚠️ <?= (int) $brokenSvgCount ?> مورد placeholder آیکون به‌درستی جایگزین نشده (احتمالاً مدل آن را به‌صورت پویا در جاوااسکریپت ساخته، مثلاً <code>{{SVG:$&#123;item.id&#125;}}</code> به‌جای نوشتن مستقیم <code>{{SVG:cat}}</code>). این یعنی به‌جای آیکون، متن خام <code>{{SVG:...}}</code> روی صفحه‌ی بازی دیده می‌شود.
+        </div>
+    <?php endif; ?>
+
+    <?php if (!empty($classCollisions)): ?>
+        <div class="warning">
+            ⚠️ هوش مصنوعی این کلاس‌های مشترک را با تعریف خودش بازنویسی کرده (که می‌تونه ظاهر بازی رو خراب کنه، مثلاً متن نامرئی):
+            <?= htmlspecialchars(implode('، ', $classCollisions)) ?>
         </div>
     <?php endif; ?>
 
@@ -392,26 +458,80 @@ $games = listGames($gamesDir);
 </div>
 
 <script>
-function downloadGame() {
-    var field = document.getElementById('gameData');
-    if (!field) return;
+const createGameForm = document.getElementById('createGameForm');
+if (createGameForm) {
+createGameForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
 
-    var bytes = Uint8Array.from(atob(field.value), function (c) {
-        return c.charCodeAt(0);
-    });
-    var html = new TextDecoder('utf-8').decode(bytes);
+    const promptInput = document.getElementById('prompt');
+    const countInput  = document.getElementById('count');
+    const modelSelect = document.getElementById('model');
+    const btn         = document.getElementById('submitBtn');
+    const loading     = document.getElementById('loading');
+    const errorBox    = document.getElementById('ajaxError');
 
-    var blob = new Blob([html], { type: 'text/html' });
-    var url = URL.createObjectURL(blob);
+    const prompt = promptInput.value.trim();
+    const count  = countInput.value;
+    const model  = modelSelect.value;
 
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'game.html';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    // پاک کردن خطای قبلی
+    errorBox.style.display = 'none';
+    errorBox.textContent = '';
 
-    URL.revokeObjectURL(url);
+    if (!prompt) {
+        errorBox.style.display = 'block';
+        errorBox.textContent = 'لطفاً توضیح بازی را وارد کنید.';
+        return;
+    }
+
+    // حالت لودینگ
+    btn.disabled = true;
+    btn.textContent = 'در حال ارسال...';
+    loading.style.display = 'block';
+
+    try {
+        const formData = new FormData();
+        formData.append('prompt', prompt);
+        formData.append('model', model);
+        if (count) {
+            formData.append('count', count);
+        }
+
+        const response = await axios.post('index.php', formData, {
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
+
+        const data = response.data;
+
+        if (data.ok && data.gameId) {
+            let url = 'index.php?play=' + encodeURIComponent(data.gameId);
+            if (data.missingSvgs && data.missingSvgs.length) {
+                url += '&missing=' + encodeURIComponent(data.missingSvgs.join(','));
+            }
+            if (data.handDrawnCount) url += '&handdrawn=' + encodeURIComponent(data.handDrawnCount);
+            if (data.brokenSvgCount) url += '&broken=' + encodeURIComponent(data.brokenSvgCount);
+            if (data.classCollisions && data.classCollisions.length) {
+                url += '&collide=' + encodeURIComponent(data.classCollisions.join(','));
+            }
+            window.location.href = url;
+            return;
+        }
+
+        errorBox.style.display = 'block';
+        errorBox.textContent = data.error || 'خطای نامشخص از سرور.';
+
+    } catch (err) {
+        console.error(err);
+        errorBox.style.display = 'block';
+        errorBox.textContent = 'خطا در ارتباط با سرور. دوباره تلاش کنید.';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🚀 ساخت بازی';
+        loading.style.display = 'none';
+    }
+});
 }
 </script>
 
