@@ -567,8 +567,13 @@ function extractGameTitle(string $html, string $fallback): string
 // Saved games (games/*.html)
 // ---------------------------------------------------------------------
 
-function saveGame(string $gamesDir, string $gameId, string $html, string $userPrompt = ''): void
+function saveGame(string $gamesDir, string $gameId, string $html, string $userPrompt = '', string $modelUsed = ''): void
 {
+    if ($modelUsed !== '') {
+        $safeModel = str_replace(['-->', '<!--'], ['', ''], $modelUsed);
+        $html = "<!-- MODEL_USED: " . $safeModel . " -->\n" . $html;
+    }
+
     if ($userPrompt !== '') {
         $safePrompt = str_replace(['-->', '<!--'], ['', ''], $userPrompt);
         $html = "<!-- USER_PROMPT: " . $safePrompt . " -->\n" . $html;
@@ -586,6 +591,22 @@ function getGamePrompt(string $gamesDir, string $gameId): ?string
     $content = file_get_contents($file);
 
     if (preg_match('/<!--\s*USER_PROMPT:\s*(.+?)\s*-->/s', $content, $m)) {
+        return trim($m[1]);
+    }
+
+    return null;
+}
+
+function getGameModel(string $gamesDir, string $gameId): ?string
+{
+    $file = $gamesDir . '/' . $gameId . '.html';
+    if (!file_exists($file)) {
+        return null;
+    }
+
+    $content = file_get_contents($file);
+
+    if (preg_match('/<!--\s*MODEL_USED:\s*(.+?)\s*-->/s', $content, $m)) {
         return trim($m[1]);
     }
 

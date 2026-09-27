@@ -47,6 +47,7 @@ if (isset($_GET['play'])) {
             $resultHtml  = $html;
             $resultTitle = extractGameTitle($html, $gameId);
             $gamePrompt  = getGamePrompt($gamesDir, $gameId);
+            $gameModel   = getGameModel($gamesDir, $gameId);
 
             // carried over from the AJAX create redirect (see below) so
             // warnings from the generation that just happened aren't lost
@@ -62,22 +63,22 @@ if (isset($_GET['play'])) {
         }
     }
 
-// -----------------------------------------------------------------
-// Action: create a new game
-// -----------------------------------------------------------------
+    // -----------------------------------------------------------------
+    // Action: create a new game
+    // -----------------------------------------------------------------
 } elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $view = 'create';
 
-$userPrompt = trim($_POST['prompt'] ?? '');
-$count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
-$selectedModel = $_POST['model'] ?? 'gapgpt-qwen-3.6'; // مقدار پیش‌فرض
+    $userPrompt = trim($_POST['prompt'] ?? '');
+    $count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
+    $selectedModel = $_POST['model'] ?? 'gapgpt-qwen-3.6'; // مقدار پیش‌فرض
 
-// اعتبارسنجی مدل
-$allowedModels = ['gapgpt-qwen-3.6', 'claude-fable-5', 'claude-sonnet-5', 'gpt-6-sol', 'deepseek-v4.1-flash'];
-if (!in_array($selectedModel, $allowedModels, true)) {
-    $selectedModel = 'gapgpt-qwen-3.6';
-}
+    // اعتبارسنجی مدل
+    $allowedModels = ['gapgpt-qwen-3.6', 'claude-fable-5', 'claude-sonnet-5', 'gpt-6-sol', 'deepseek-v4.1-flash'];
+    if (!in_array($selectedModel, $allowedModels, true)) {
+        $selectedModel = 'gapgpt-qwen-3.6';
+    }
     if ($count !== null) {
         if ($count < 1)  $count = 1;
         if ($count > 30) $count = 30;
@@ -136,7 +137,7 @@ if (!in_array($selectedModel, $allowedModels, true)) {
                 $resultTitle = extractGameTitle($text, $userPrompt);
 
                 $gameId = newGameId();
-                saveGame($gamesDir, $gameId, $resultHtml, $userPrompt);
+                saveGame($gamesDir, $gameId, $resultHtml, $userPrompt, $selectedModel);
             }
         }
     }
@@ -176,21 +177,24 @@ $games = listGames($gamesDir);
     <title>AI Game Builder</title>
     <script src="assets/axios.min.js"></script>
     <style>
-        * { box-sizing: border-box; }
-@font-face {
-    font-family: 'Vazir';
-    src: url('assets/fonts/vazir.woff') format('woff');
-    font-weight: normal;
-    font-style: normal;
-    font-display: swap;
-}
+        * {
+            box-sizing: border-box;
+        }
 
-body {
-    margin: 0;
-    font-family: 'Vazir', Tahoma, Arial, sans-serif !important;
-    background: #111827;
-    color: white;
-}
+        @font-face {
+            font-family: 'Vazir';
+            src: url('assets/fonts/vazir.woff') format('woff');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'Vazir', Tahoma, Arial, sans-serif !important;
+            background: #111827;
+            color: white;
+        }
 
         .container {
             max-width: 1400px;
@@ -198,7 +202,9 @@ body {
             padding: 30px;
         }
 
-        h1 { margin-top: 0; }
+        h1 {
+            margin-top: 0;
+        }
 
         .description {
             color: #9ca3af;
@@ -225,7 +231,9 @@ body {
             margin-top: 15px;
         }
 
-        .count-row label { color: #9ca3af; }
+        .count-row label {
+            color: #9ca3af;
+        }
 
         .count-row input {
             width: 90px;
@@ -249,10 +257,17 @@ body {
             cursor: pointer;
         }
 
-        button:hover { background: #4f46e5; }
+        button:hover {
+            background: #4f46e5;
+        }
 
-        button.secondary { background: #10b981; }
-        button.secondary:hover { background: #059669; }
+        button.secondary {
+            background: #10b981;
+        }
+
+        button.secondary:hover {
+            background: #059669;
+        }
 
         .error {
             margin-top: 20px;
@@ -273,7 +288,9 @@ body {
             color: #fde68a;
         }
 
-        .game-container { margin-top: 30px; }
+        .game-container {
+            margin-top: 30px;
+        }
 
         .game-header {
             margin-bottom: 15px;
@@ -292,7 +309,9 @@ body {
             background: white;
         }
 
-        .games-list { margin-top: 50px; }
+        .games-list {
+            margin-top: 50px;
+        }
 
         .games-list h2 {
             border-bottom: 1px solid #374151;
@@ -316,9 +335,14 @@ body {
             display: block;
         }
 
-        .game-card:hover { border-color: #6366f1; }
+        .game-card:hover {
+            border-color: #6366f1;
+        }
 
-        .game-card .title { font-weight: bold; margin-bottom: 6px; }
+        .game-card .title {
+            font-weight: bold;
+            margin-bottom: 6px;
+        }
 
         .game-card .meta {
             color: #9ca3af;
@@ -332,231 +356,200 @@ body {
             text-decoration: none;
         }
 
-        .empty { color: #6b7280; margin-top: 20px; }
+        .empty {
+            color: #6b7280;
+            margin-top: 20px;
+        }
     </style>
 </head>
 
 <body>
 
-<div class="container">
+    <div class="container">
 
-    <h1>🎮 AI Game Builder</h1>
+        <h1>🎮 AI Game Builder</h1>
 
-    <?php if ($view === 'play'): ?>
-        <a class="back-link" href="index.php">← بازگشت به خانه</a>
-    <?php else: ?>
+        <?php if ($view === 'play'): ?>
+            <a class="back-link" href="index.php">← بازگشت به خانه</a>
+        <?php else: ?>
 
-        <div class="description">
-            توضیح بده چه بازی‌ای می‌خواهی؛ هوش مصنوعی کل بازی (HTML، CSS، JS) را مستقیماً می‌سازد و فقط از آیکون‌های آماده‌ی پروژه استفاده می‌کند.
-        </div>
-
-<form id="createGameForm">
-
-    <div style="margin-bottom: 15px;">
-        <label for="model" style="color:#9ca3af; display:block; margin-bottom:6px;">انتخاب مدل هوش مصنوعی:</label>
-        <select name="model" id="model" style="width:100%; padding:12px; border-radius:8px; border:1px solid #374151; background:#1f2937; color:white; font-size:16px;">
-            <option value="gapgpt-qwen-3.6">Qwen 3.6 (پیشنهادی)</option>
-            <option value="claude-fable-5">Claude Fable 5</option>
-            <option value="claude-sonnet-5">Claude Sonnet 5</option>
-            <option value="gpt-6-sol">GPT-6 Sol</option>
-            <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash</option>
-        </select>
-    </div>
-
-    <textarea
-        name="prompt"
-        id="prompt"
-        placeholder="مثلاً: کوییز میوه‌ها برای کودکان ۵ ساله که هنوز خواندن و نوشتن بلد نیستند..."
-    ></textarea>
-
-    <div class="count-row">
-        <label for="count">تعداد سوال / آیتم (اختیاری):</label>
-        <input
-            type="number"
-            id="count"
-            name="count"
-            min="1"
-            max="30"
-            placeholder="مثلاً 5"
-        >
-    </div>
-
-    <button type="submit" id="submitBtn">🚀 ساخت بازی</button>
-
-    <div id="loading" style="display:none; margin-top:12px; color:#9ca3af;">
-        ⏳ در حال ساخت بازی... (ممکن است تا چند دقیقه طول بکشد)
-    </div>
-    <div id="ajaxError" class="error" style="display:none;"></div>
-</form>
-
-    <?php endif; ?>
-
-    <?php if ($error): ?>
-        <div class="error"><?= htmlspecialchars($error) ?></div>
-    <?php endif; ?>
-
-    <?php if (!empty($missingSvgs)): ?>
-        <div class="warning">
-            ⚠️ هوش مصنوعی به این آیکون‌ها اشاره کرده که در پوشه‌ی assets/icons وجود ندارند (نادیده گرفته شدند):
-            <?= htmlspecialchars(implode('، ', $missingSvgs)) ?>
-        </div>
-    <?php endif; ?>
-
-    <?php if ($handDrawnCount > 0): ?>
-        <div class="warning">
-            ⚠️ هوش مصنوعی <?= (int) $handDrawnCount ?> مورد SVG را خودش دستی کشیده، به‌جای استفاده از آیکون‌های آماده‌ی <code>assets/icons</code>. بازی همچنان کار می‌کند، ولی این یعنی مدل قانون استفاده‌ی مجدد از آیکون را رعایت نکرده.
-        </div>
-    <?php endif; ?>
-
-    <?php if ($brokenSvgCount > 0): ?>
-        <div class="error">
-            ⚠️ <?= (int) $brokenSvgCount ?> مورد placeholder آیکون به‌درستی جایگزین نشده (احتمالاً مدل آن را به‌صورت پویا در جاوااسکریپت ساخته، مثلاً <code>{{SVG:$&#123;item.id&#125;}}</code> به‌جای نوشتن مستقیم <code>{{SVG:cat}}</code>). این یعنی به‌جای آیکون، متن خام <code>{{SVG:...}}</code> روی صفحه‌ی بازی دیده می‌شود.
-        </div>
-    <?php endif; ?>
-
-    <?php if (!empty($classCollisions)): ?>
-        <div class="warning">
-            ⚠️ هوش مصنوعی این کلاس‌های مشترک را با تعریف خودش بازنویسی کرده (که می‌تونه ظاهر بازی رو خراب کنه، مثلاً متن نامرئی):
-            <?= htmlspecialchars(implode('، ', $classCollisions)) ?>
-        </div>
-    <?php endif; ?>
-
-    <?php if ($hadExtraText): ?>
-        <div class="warning">
-            ⚠️ هوش مصنوعی متن توضیحی/بلوک‌های ``` اضافه‌ای قبل یا بعد از کد HTML نوشته بود؛ به‌طور خودکار حذف شد.
-        </div>
-    <?php endif; ?>
-
-<?php if ($resultHtml): ?>
-
-    <div class="game-container">
-
-        <div class="game-header">
-            <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?></h2>
-        </div>
-
-        <?php if (!empty($gamePrompt)): ?>
-            <div class="prompt-box" style="background:#1f2937; border:1px solid #374151; border-radius:12px; padding:16px; margin-bottom:20px; color:#e5e7eb; line-height:1.7;">
-                <strong style="color:#a5b4fc;">پرامپت اصلی:</strong><br>
-                <?= nl2br(htmlspecialchars($gamePrompt)) ?>
+            <div class="description">
+                توضیح بده چه بازی‌ای می‌خواهی؛ هوش مصنوعی کل بازی (HTML، CSS، JS) را مستقیماً می‌سازد و فقط از آیکون‌های آماده‌ی پروژه استفاده می‌کند.
             </div>
+
+            <form id="createGameForm">
+
+                <div style="margin-bottom: 15px;">
+                    <label for="model" style="color:#9ca3af; display:block; margin-bottom:6px;">انتخاب مدل هوش مصنوعی:</label>
+                    <select name="model" id="model" style="width:100%; padding:12px; border-radius:8px; border:1px solid #374151; background:#1f2937; color:white; font-size:16px;">
+                        <option value="gapgpt-qwen-3.6">Qwen 3.6 (پیشنهادی)</option>
+                        <option value="claude-fable-5">Claude Fable 5</option>
+                        <option value="claude-sonnet-5">Claude Sonnet 5</option>
+                        <option value="gpt-6-sol">GPT-6 Sol</option>
+                        <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash</option>
+                    </select>
+                </div>
+
+                <textarea
+                    name="prompt"
+                    id="prompt"
+                    placeholder="مثلاً: کوییز میوه‌ها برای کودکان ۵ ساله که هنوز خواندن و نوشتن بلد نیستند..."></textarea>
+
+                <div class="count-row">
+                    <label for="count">تعداد سوال / آیتم (اختیاری):</label>
+                    <input
+                        type="number"
+                        id="count"
+                        name="count"
+                        min="1"
+                        max="30"
+                        placeholder="مثلاً 5">
+                </div>
+
+                <button type="submit" id="submitBtn">🚀 ساخت بازی</button>
+
+                <div id="loading" style="display:none; margin-top:12px; color:#9ca3af;">
+                    ⏳ در حال ساخت بازی... (ممکن است تا چند دقیقه طول بکشد)
+                </div>
+                <div id="ajaxError" class="error" style="display:none;"></div>
+            </form>
+
         <?php endif; ?>
 
-        <div style="width: 200px;height:200px">
-            حضور مقدم شما
-        </div>
-<div style="background: red; font-family: 'Vazir' !important;">
-        <iframe
-            class="game-frame "
-            sandbox="allow-scripts"
-            style="font-family: 'Vazir', Tahoma, sans-serif !important;"
-            srcdoc="<?= htmlspecialchars($resultHtml, ENT_QUOTES, 'UTF-8') ?>"
-        ></iframe>
-</div>
+        <?php if ($error): ?>
+            <div class="error"><?= htmlspecialchars($error) ?></div>
+        <?php endif; ?>
+
+        <?php if ($resultHtml): ?>
+
+            <div class="game-container">
+
+                <div class="game-header">
+                    <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?></h2>
+                </div>
+
+                <?php if (!empty($gamePrompt)): ?>
+                    <div class="prompt-box" style="background:#1f2937; border:1px solid #374151; border-radius:12px; padding:16px; margin-bottom:20px; color:#e5e7eb; line-height:1.7;">
+                        <strong style="color:#a5b4fc;">پرامپت اصلی:</strong><br>
+                        <?= nl2br(htmlspecialchars($gamePrompt)) ?>
+                        <?php if (!empty($gameModel)): ?>
+                            <br><strong style="color:#a5b4fc;">مدل استفاده‌شده:</strong> <?= htmlspecialchars($gameModel) ?>
+                        <?php endif; ?>
+                    </div>
+                <?php endif; ?>
+
+                <div style="font-family: 'Vazir' !important;">
+                    <iframe
+                        class="game-frame "
+                        sandbox="allow-scripts"
+                        style="font-family: 'Vazir', Tahoma, sans-serif !important;"
+                        srcdoc="<?= htmlspecialchars($resultHtml, ENT_QUOTES, 'UTF-8') ?>"></iframe>
+                </div>
+            </div>
+
+        <?php endif; ?>
+        <?php if ($view !== 'play'): ?>
+
+            <div class="games-list">
+                <h2>بازی‌های ساخته‌شده</h2>
+
+                <?php if (empty($games)): ?>
+                    <div class="empty">هنوز هیچ بازی‌ای ساخته نشده است.</div>
+                <?php else: ?>
+                    <div class="games-grid">
+                        <?php foreach ($games as $g): ?>
+                            <a class="game-card" href="index.php?play=<?= urlencode($g['id']) ?>">
+                                <div class="title"><?= htmlspecialchars($g['title']) ?></div>
+                                <div class="meta"><?= htmlspecialchars(date('Y-m-d H:i', $g['created_at'])) ?></div>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+
+        <?php endif; ?>
+
     </div>
 
-<?php endif; ?>
-    <?php if ($view !== 'play'): ?>
+    <script>
+        const createGameForm = document.getElementById('createGameForm');
+        if (createGameForm) {
+            createGameForm.addEventListener('submit', async function(e) {
+                e.preventDefault();
 
-        <div class="games-list">
-            <h2>بازی‌های ساخته‌شده</h2>
+                const promptInput = document.getElementById('prompt');
+                const countInput = document.getElementById('count');
+                const modelSelect = document.getElementById('model');
+                const btn = document.getElementById('submitBtn');
+                const loading = document.getElementById('loading');
+                const errorBox = document.getElementById('ajaxError');
 
-            <?php if (empty($games)): ?>
-                <div class="empty">هنوز هیچ بازی‌ای ساخته نشده است.</div>
-            <?php else: ?>
-                <div class="games-grid">
-                    <?php foreach ($games as $g): ?>
-                        <a class="game-card" href="index.php?play=<?= urlencode($g['id']) ?>">
-                            <div class="title"><?= htmlspecialchars($g['title']) ?></div>
-                            <div class="meta"><?= htmlspecialchars(date('Y-m-d H:i', $g['created_at'])) ?></div>
-                        </a>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-        </div>
+                const prompt = promptInput.value.trim();
+                const count = countInput.value;
+                const model = modelSelect.value;
 
-    <?php endif; ?>
+                // پاک کردن خطای قبلی
+                errorBox.style.display = 'none';
+                errorBox.textContent = '';
 
-</div>
+                if (!prompt) {
+                    errorBox.style.display = 'block';
+                    errorBox.textContent = 'لطفاً توضیح بازی را وارد کنید.';
+                    return;
+                }
 
-<script>
-const createGameForm = document.getElementById('createGameForm');
-if (createGameForm) {
-createGameForm.addEventListener('submit', async function (e) {
-    e.preventDefault();
+                // حالت لودینگ
+                btn.disabled = true;
+                btn.textContent = 'در حال ارسال...';
+                loading.style.display = 'block';
 
-    const promptInput = document.getElementById('prompt');
-    const countInput  = document.getElementById('count');
-    const modelSelect = document.getElementById('model');
-    const btn         = document.getElementById('submitBtn');
-    const loading     = document.getElementById('loading');
-    const errorBox    = document.getElementById('ajaxError');
+                try {
+                    const formData = new FormData();
+                    formData.append('prompt', prompt);
+                    formData.append('model', model);
+                    if (count) {
+                        formData.append('count', count);
+                    }
 
-    const prompt = promptInput.value.trim();
-    const count  = countInput.value;
-    const model  = modelSelect.value;
+                    const response = await axios.post('index.php', formData, {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    });
 
-    // پاک کردن خطای قبلی
-    errorBox.style.display = 'none';
-    errorBox.textContent = '';
+                    const data = response.data;
 
-    if (!prompt) {
-        errorBox.style.display = 'block';
-        errorBox.textContent = 'لطفاً توضیح بازی را وارد کنید.';
-        return;
-    }
+                    if (data.ok && data.gameId) {
+                        let url = 'index.php?play=' + encodeURIComponent(data.gameId);
+                        if (data.missingSvgs && data.missingSvgs.length) {
+                            url += '&missing=' + encodeURIComponent(data.missingSvgs.join(','));
+                        }
+                        if (data.handDrawnCount) url += '&handdrawn=' + encodeURIComponent(data.handDrawnCount);
+                        if (data.brokenSvgCount) url += '&broken=' + encodeURIComponent(data.brokenSvgCount);
+                        if (data.classCollisions && data.classCollisions.length) {
+                            url += '&collide=' + encodeURIComponent(data.classCollisions.join(','));
+                        }
+                        if (data.hadExtraText) url += '&extratext=1';
+                        window.location.href = url;
+                        return;
+                    }
 
-    // حالت لودینگ
-    btn.disabled = true;
-    btn.textContent = 'در حال ارسال...';
-    loading.style.display = 'block';
+                    errorBox.style.display = 'block';
+                    errorBox.textContent = data.error || 'خطای نامشخص از سرور.';
 
-    try {
-        const formData = new FormData();
-        formData.append('prompt', prompt);
-        formData.append('model', model);
-        if (count) {
-            formData.append('count', count);
+                } catch (err) {
+                    console.error(err);
+                    errorBox.style.display = 'block';
+                    errorBox.textContent = 'خطا در ارتباط با سرور. دوباره تلاش کنید.';
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '🚀 ساخت بازی';
+                    loading.style.display = 'none';
+                }
+            });
         }
-
-        const response = await axios.post('index.php', formData, {
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
-
-        const data = response.data;
-
-        if (data.ok && data.gameId) {
-            let url = 'index.php?play=' + encodeURIComponent(data.gameId);
-            if (data.missingSvgs && data.missingSvgs.length) {
-                url += '&missing=' + encodeURIComponent(data.missingSvgs.join(','));
-            }
-            if (data.handDrawnCount) url += '&handdrawn=' + encodeURIComponent(data.handDrawnCount);
-            if (data.brokenSvgCount) url += '&broken=' + encodeURIComponent(data.brokenSvgCount);
-            if (data.classCollisions && data.classCollisions.length) {
-                url += '&collide=' + encodeURIComponent(data.classCollisions.join(','));
-            }
-            if (data.hadExtraText) url += '&extratext=1';
-            window.location.href = url;
-            return;
-        }
-
-        errorBox.style.display = 'block';
-        errorBox.textContent = data.error || 'خطای نامشخص از سرور.';
-
-    } catch (err) {
-        console.error(err);
-        errorBox.style.display = 'block';
-        errorBox.textContent = 'خطا در ارتباط با سرور. دوباره تلاش کنید.';
-    } finally {
-        btn.disabled = false;
-        btn.textContent = '🚀 ساخت بازی';
-        loading.style.display = 'none';
-    }
-});
-}
-</script>
+    </script>
 
 </body>
+
 </html>
