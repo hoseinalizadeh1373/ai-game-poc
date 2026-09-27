@@ -4,7 +4,12 @@
    with the same comment style and it appears automatically next time. */
 
 *{box-sizing:border-box}
-body{margin:0;font-family:Tahoma,Arial,sans-serif;-webkit-tap-highlight-color:transparent}
+
+/* @font-face Vazir — guaranteed-correct local font source, injected after the
+   AI's own <style> so it always wins the cascade regardless of whether (or
+   how correctly) the model declared its own @font-face. */
+@font-face{font-family:'Vazir';src:url('assets/fonts/vazir.woff') format('woff');font-weight:normal;font-style:normal;font-display:swap}
+body{margin:0;font-family:'Vazir',Tahoma,Arial,sans-serif!important;-webkit-tap-highlight-color:transparent}
 
 /* @class .btn — a large, colorful, rounded, finger-friendly button for any clickable action */
 .btn{display:inline-block;padding:14px 28px;border:0;border-radius:14px;background:#6366f1;color:#fff;font-size:18px;font-weight:bold;cursor:pointer;user-select:none;transition:transform .1s}

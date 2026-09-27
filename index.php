@@ -24,6 +24,7 @@ $missingSvgs     = [];
 $handDrawnCount  = 0;
 $brokenSvgCount  = 0;
 $classCollisions = [];
+$hadExtraText    = false;
 $resultHtml      = null;
 $resultTitle     = null;
 $gameId          = null;
@@ -57,6 +58,7 @@ if (isset($_GET['play'])) {
             if (!empty($_GET['collide'])) {
                 $classCollisions = array_filter(explode(',', (string) $_GET['collide']));
             }
+            $hadExtraText = !empty($_GET['extratext']);
         }
     }
 
@@ -102,37 +104,38 @@ if (!in_array($selectedModel, $allowedModels, true)) {
             $error = $apiResult['error'];
         } else {
 
-            $text = trim($apiResult['text']);
-            $text = preg_replace('/^```html\s*/i', '', $text);
-            $text = preg_replace('/^```\s*/', '', $text);
-            $text = preg_replace('/\s*```$/', '', $text);
-            $text = trim($text);
+            $rawText = trim($apiResult['text']);
+            [$text, $hadExtraText] = extractHtmlDocument($rawText);
 
-            // must run BEFORE substitution: a compliant model's raw output
-            // never contains a literal "<svg" tag (only {{SVG:id}} placeholders)
-            $handDrawnCount = countHandDrawnSvg($text);
-
-            [$text, $missingSvgs] = applySvgPlaceholders($text, $icons);
-
-            // must run AFTER substitution: anything still matching "{{SVG"
-            // at this point means the placeholder was built dynamically
-            // (e.g. with a JS variable) and could never be resolved
-            $brokenSvgCount = countBrokenSvgPlaceholders($text);
-
-            // must run on the RAW model output, before we inject our own
-            // <style> — otherwise we'd also match our own shared rules
-            $classCollisions = detectSharedClassCollisions($text, $baseCss);
-
-            if (stripos($text, '<!doctype html') === false && stripos($text, '<html') === false) {
+            if ($text === null) {
                 $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
             } else {
+
+                // must run BEFORE substitution: a compliant model's raw output
+                // never contains a literal "<svg" tag (only {{SVG:id}} placeholders)
+                $handDrawnCount = countHandDrawnSvg($text);
+
+                [$text, $missingSvgs] = applySvgPlaceholders($text, $icons);
+
+                // must run AFTER substitution: anything still matching "{{SVG"
+                // at this point means the placeholder was built dynamically
+                // (e.g. with a JS variable) and could never be resolved
+                $brokenSvgCount = countBrokenSvgPlaceholders($text);
+
+                // must run on the RAW model output, before we inject our own
+                // <style> — otherwise we'd also match our own shared rules
+                $classCollisions = detectSharedClassCollisions($text, $baseCss);
+
+                // fix up whatever path the model wrote for the Vazir font
+                // BEFORE injecting/saving, so the fix actually lands in the
+                // saved file (previously this ran too late to have any effect)
+                $text = normalizeFontPath($text);
                 $text = injectSharedAssets($text, $baseCss, $baseJs);
 
                 $resultHtml  = $text;
                 $resultTitle = extractGameTitle($text, $userPrompt);
 
                 $gameId = newGameId();
-
                 saveGame($gamesDir, $gameId, $resultHtml, $userPrompt);
             }
         }
@@ -155,6 +158,7 @@ if (!in_array($selectedModel, $allowedModels, true)) {
             'handDrawnCount'  => $handDrawnCount,
             'brokenSvgCount'  => $brokenSvgCount,
             'classCollisions' => $classCollisions,
+            'hadExtraText'    => $hadExtraText,
         ], JSON_UNESCAPED_UNICODE);
         exit;
     }
@@ -173,13 +177,20 @@ $games = listGames($gamesDir);
     <script src="assets/axios.min.js"></script>
     <style>
         * { box-sizing: border-box; }
+@font-face {
+    font-family: 'Vazir';
+    src: url('assets/fonts/vazir.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
 
-        body {
-            margin: 0;
-            font-family: Tahoma, Arial, sans-serif;
-            background: #111827;
-            color: white;
-        }
+body {
+    margin: 0;
+    font-family: 'Vazir', Tahoma, Arial, sans-serif !important;
+    background: #111827;
+    color: white;
+}
 
         .container {
             max-width: 1400px;
@@ -410,6 +421,12 @@ $games = listGames($gamesDir);
         </div>
     <?php endif; ?>
 
+    <?php if ($hadExtraText): ?>
+        <div class="warning">
+            ⚠️ هوش مصنوعی متن توضیحی/بلوک‌های ``` اضافه‌ای قبل یا بعد از کد HTML نوشته بود؛ به‌طور خودکار حذف شد.
+        </div>
+    <?php endif; ?>
+
 <?php if ($resultHtml): ?>
 
     <div class="game-container">
@@ -425,12 +442,17 @@ $games = listGames($gamesDir);
             </div>
         <?php endif; ?>
 
+        <div style="width: 200px;height:200px">
+            حضور مقدم شما
+        </div>
+<div style="background: red; font-family: 'Vazir' !important;">
         <iframe
-            class="game-frame"
+            class="game-frame "
             sandbox="allow-scripts"
+            style="font-family: 'Vazir', Tahoma, sans-serif !important;"
             srcdoc="<?= htmlspecialchars($resultHtml, ENT_QUOTES, 'UTF-8') ?>"
         ></iframe>
-
+</div>
     </div>
 
 <?php endif; ?>
@@ -515,6 +537,7 @@ createGameForm.addEventListener('submit', async function (e) {
             if (data.classCollisions && data.classCollisions.length) {
                 url += '&collide=' + encodeURIComponent(data.classCollisions.join(','));
             }
+            if (data.hadExtraText) url += '&extratext=1';
             window.location.href = url;
             return;
         }

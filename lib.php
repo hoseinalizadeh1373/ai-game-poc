@@ -293,6 +293,63 @@ function detectSharedClassCollisions(string $rawModelOutput, string $baseCss): a
 }
 
 // ---------------------------------------------------------------------
+// Extracting the HTML document from the raw model response
+// ---------------------------------------------------------------------
+
+/**
+ * A weak/non-compliant model sometimes ignores the "output ONLY raw HTML,
+ * no explanations, no code fences" rule and wraps the document in prose
+ * and/or ```html fences. Simply trimming ``` from the very start/end of
+ * the string (the old approach) misses this whenever there's ANY text
+ * before the opening fence or after the closing one — that leftover
+ * prose then becomes literal, visible text on the saved game page
+ * (browsers relocate stray text before <html> into the visible body).
+ *
+ * This instead locates the first <!doctype html> (or <html>) tag and the
+ * LAST </html> tag anywhere in the response and keeps only what's
+ * between them — robust to prose or fences appearing anywhere around the
+ * document, not just at the very edges of the trimmed string.
+ *
+ * @return array{0:?string, 1:bool} [extracted HTML, or null if no document was found; whether extra text/fences were stripped]
+ */
+function extractHtmlDocument(string $raw): array
+{
+    $raw = trim($raw);
+
+    // Fence markers can legitimately appear anywhere (start, or wrapping
+    // the whole thing) — strip them first so the doctype/html search
+    // below isn't thrown off, and so they never end up inside the saved
+    // document.
+    $stripped = preg_replace('/```html/i', '', $raw);
+    $stripped = preg_replace('/```/', '', $stripped);
+
+    $startPos = null;
+    if (preg_match('/<!doctype\s+html/i', $stripped, $m, PREG_OFFSET_CAPTURE)) {
+        $startPos = $m[0][1];
+    } elseif (preg_match('/<html[\s>]/i', $stripped, $m, PREG_OFFSET_CAPTURE)) {
+        $startPos = $m[0][1];
+    }
+
+    if ($startPos === null) {
+        return [null, false];
+    }
+
+    $endPos = null;
+    if (preg_match_all('/<\/html\s*>/i', $stripped, $mAll, PREG_OFFSET_CAPTURE)) {
+        $last  = end($mAll[0]);
+        $endPos = $last[1] + strlen($last[0]);
+    }
+
+    $extracted = trim($endPos !== null
+        ? substr($stripped, $startPos, $endPos - $startPos)
+        : substr($stripped, $startPos));
+
+    $hadExtraText = trim($stripped) !== $extracted;
+
+    return [$extracted, $hadExtraText];
+}
+
+// ---------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------
 
@@ -326,7 +383,7 @@ Add this inside a <style> tag in the <head>:
 
 @font-face {
   font-family: 'Vazir';
-  src: url('assets/fonts/vazir.woff') format('woff');
+  src: url('/assets/fonts/vazir.woff') format('woff');
   font-weight: normal;
   font-style: normal;
   font-display: swap;
@@ -335,7 +392,7 @@ Add this inside a <style> tag in the <head>:
 Then apply it to the whole page:
 
 body {
-  font-family: 'Vazir', Tahoma, sans-serif;
+  font-family:'Vazir', Tahoma, sans-serif !important;
 }
 
 ICON SYSTEM — ICONIFY (COLORED ICONS)
@@ -538,6 +595,30 @@ function loadGame(string $gamesDir, string $gameId): ?string
 {
     $file = $gamesDir . '/' . $gameId . '.html';
     return file_exists($file) ? file_get_contents($file) : null;
+}
+
+/**
+ * Force every reference to the Vazir font asset onto the single correct
+ * RELATIVE path, regardless of what the model wrote (root-absolute
+ * '/assets/...', '../assets/...', etc.).
+ *
+ * Why this matters: the generated game is shown inside an <iframe
+ * srcdoc="...">, and a srcdoc document resolves relative URLs against the
+ * URL of the PARENT page (index.php), not against the domain root. So a
+ * relative path like 'assets/fonts/vazir.woff' works correctly, but a
+ * root-absolute path like '/assets/fonts/vazir.woff' only works if this
+ * whole app happens to be hosted at the domain root — in any subfolder
+ * deployment it 404s and the font silently falls back to Tahoma. A
+ * previous version of this function did the opposite (rewrote to an
+ * absolute path), which is exactly what caused that failure.
+ */
+function normalizeFontPath(string $html): string
+{
+    return preg_replace(
+        '/url\(\s*[\'"]?(?:https?:\/\/[^\'")]*)?(?:\.\.\/)*\/?assets\/fonts\/vazir\.woff[\'"]?\s*\)/i',
+        "url('assets/fonts/vazir.woff')",
+        $html
+    );
 }
 
 function listGames(string $gamesDir): array
