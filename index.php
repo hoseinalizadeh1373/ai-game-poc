@@ -43,6 +43,7 @@ if (isset($_GET['play'])) {
         } else {
             $resultHtml  = $html;
             $resultTitle = extractGameTitle($html, $gameId);
+            $gamePrompt  = getGamePrompt($gamesDir, $gameId); 
         }
     }
 
@@ -108,7 +109,8 @@ if (isset($_GET['play'])) {
                 $resultTitle = extractGameTitle($text, $userPrompt);
 
                 $gameId = newGameId();
-                saveGame($gamesDir, $gameId, $resultHtml);
+
+                saveGame($gamesDir, $gameId, $resultHtml, $userPrompt);
             }
         }
     }
@@ -342,29 +344,30 @@ $games = listGames($gamesDir);
         </div>
     <?php endif; ?>
 
-    <?php if ($resultHtml): ?>
+<?php if ($resultHtml): ?>
 
-        <div class="game-container">
+    <div class="game-container">
 
-            <div class="game-header">
-                <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?></h2>
-                <button type="button" class="secondary" onclick="downloadGame()">
-                    ⬇️ دریافت خروجی (HTML)
-                </button>
-            </div>
-
-            <iframe
-                class="game-frame"
-                sandbox="allow-scripts"
-                srcdoc="<?= htmlspecialchars($resultHtml, ENT_QUOTES, 'UTF-8') ?>"
-            ></iframe>
-
-            <input type="hidden" id="gameData" value="<?= base64_encode($resultHtml) ?>">
-
+        <div class="game-header">
+            <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?></h2>
         </div>
 
-    <?php endif; ?>
+        <?php if (!empty($gamePrompt)): ?>
+            <div class="prompt-box" style="background:#1f2937; border:1px solid #374151; border-radius:12px; padding:16px; margin-bottom:20px; color:#e5e7eb; line-height:1.7;">
+                <strong style="color:#a5b4fc;">پرامپت اصلی:</strong><br>
+                <?= nl2br(htmlspecialchars($gamePrompt)) ?>
+            </div>
+        <?php endif; ?>
 
+        <iframe
+            class="game-frame"
+            sandbox="allow-scripts"
+            srcdoc="<?= htmlspecialchars($resultHtml, ENT_QUOTES, 'UTF-8') ?>"
+        ></iframe>
+
+    </div>
+
+<?php endif; ?>
     <?php if ($view !== 'play'): ?>
 
         <div class="games-list">

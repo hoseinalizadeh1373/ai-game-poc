@@ -258,11 +258,31 @@ OUTPUT FORMAT — STRICT
 
 TECHNICAL RULES
 - HTML5 + CSS3 + vanilla JavaScript only.
-- Only allowed external resource: the local Iconify script.
+- Only allowed external resources: the local Iconify script and the local Vazir font.
 - Fully playable game with real logic, score (when relevant), and clear win/lose/completion state.
 - Must be responsive (works well on mobile and desktop).
 - Prefer relative units (em, rem, %) so icons and layout scale nicely with text.
 - Visual style: simple, colorful, friendly for children.
+- The game language is Persian (RTL). Always set dir="rtl" on the <html> tag.
+
+FONT — REQUIRED
+Always include and use the local Vazir font.
+
+Add this inside a <style> tag in the <head>:
+
+@font-face {
+  font-family: 'Vazir';
+  src: url('assets/fonts/vazir.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+Then apply it to the whole page:
+
+body {
+  font-family: 'Vazir', Tahoma, sans-serif;
+}
 
 ICON SYSTEM — ICONIFY (COLORED ICONS)
 
@@ -282,23 +302,61 @@ You must use Iconify for every icon.
 - openmoji
 - fluent-emoji-flat
 
-You are free to use any valid icon from these collections. There is no limited list. Choose whatever icon fits the game best.
+You are free to use any valid icon from these collections. There is no limited list.
 
-4. Size recommendation for responsive + text-heavy games:
+4. Size recommendation:
 Use font-size with em units (example: style="font-size: 2.2em; vertical-align: -0.15em;")
 
-5. Strictly forbidden:
+SOUND EFFECTS — REQUIRED
+
+Every game must have simple and pleasant sound effects using the Web Audio API (no external audio files).
+
+Required sounds (at minimum):
+- Correct / Success sound
+- Wrong / Error sound
+- Click / Tap sound
+- Win / Level complete sound (when relevant)
+
+Rules for sound:
+- Use Web Audio API only (AudioContext).
+- Keep sounds short and soft (suitable for children).
+- Do not use external .mp3 / .wav files.
+- Do not use base64 audio.
+- Create a small reusable sound helper function.
+
+Example structure (you can improve it):
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playTone(freq, duration, type = 'sine', volume = 0.1) {
+  const oscillator = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  oscillator.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  oscillator.frequency.value = freq;
+  oscillator.type = type;
+  gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
+  gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+  oscillator.start();
+  oscillator.stop(audioCtx.currentTime + duration);
+}
+
+FORBIDDEN
 - Writing any <svg> ... </svg>
 - Using <img src="assets/icons/...">
 - Using {{SVG:...}} placeholders
-- Using monotone/icon-font style icons when a colored version exists
-- Using CDN links
+- Using monotone icons when colored versions exist
+- Using any CDN or external links
+- Using external audio files
 
 BEFORE ANSWERING — SELF CHECK
+- Vazir font is loaded and applied
 - Iconify local script is present
-- Every icon is written as <iconify-icon icon="...">
-- Colored sets are preferred
-- No <svg> tags exist
+- Every icon uses <iconify-icon>
+- Colored icon sets are preferred
+- Sound effects with Web Audio API exist
+- No <svg> tags
+- html has dir="rtl"
 - Game is responsive
 
 Return only the final HTML document.
@@ -306,7 +364,6 @@ PROMPT;
 
     return $template;
 }
-
 // ---------------------------------------------------------------------
 // API call
 // ---------------------------------------------------------------------
@@ -400,11 +457,30 @@ function extractGameTitle(string $html, string $fallback): string
 // Saved games (games/*.html)
 // ---------------------------------------------------------------------
 
-function saveGame(string $gamesDir, string $gameId, string $html): void
+function saveGame(string $gamesDir, string $gameId, string $html, string $userPrompt = ''): void
 {
+    if ($userPrompt !== '') {
+        $safePrompt = str_replace(['-->', '<!--'], ['', ''], $userPrompt);
+        $html = "<!-- USER_PROMPT: " . $safePrompt . " -->\n" . $html;
+    }
+
     file_put_contents($gamesDir . '/' . $gameId . '.html', $html);
 }
+function getGamePrompt(string $gamesDir, string $gameId): ?string
+{
+    $file = $gamesDir . '/' . $gameId . '.html';
+    if (!file_exists($file)) {
+        return null;
+    }
 
+    $content = file_get_contents($file);
+
+    if (preg_match('/<!--\s*USER_PROMPT:\s*(.+?)\s*-->/s', $content, $m)) {
+        return trim($m[1]);
+    }
+
+    return null;
+}
 function loadGame(string $gamesDir, string $gameId): ?string
 {
     $file = $gamesDir . '/' . $gameId . '.html';
