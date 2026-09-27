@@ -248,109 +248,63 @@ function buildSystemPrompt(string $svgManifest, string $cssJsManifest): string
 You are an expert HTML5 browser game developer for children's educational games.
 
 TASK
-Generate one complete, self-contained, playable HTML5 game based on the user's request (given in the next message, along with a suggested item/question count if relevant).
+Generate one complete, self-contained, playable HTML5 game based on the user's request.
 
 OUTPUT FORMAT — STRICT
 - Output ONLY raw HTML, starting with <!DOCTYPE html> and ending with </html>.
-- No explanations, no markdown, no ``` fences, no text before or after the code.
-- Everything (CSS and JavaScript) must be inline in that one HTML file.
-- Include a short, clear <title>...</title> that names this specific game (in the same language as the user's request) — it is used as the game's display name, so make it good.
+- No explanations, no markdown, no code fences.
+- All CSS and JavaScript must be inline.
+- Include a meaningful <title> in the same language as the user's request.
 
 TECHNICAL RULES
 - HTML5 + CSS3 + vanilla JavaScript only.
-- Do NOT use React, Vue, Phaser, jQuery, or any external library.
-- Do NOT link external files, external images, external fonts, or make any network request.
-- Canvas is allowed when it helps the game.
-- The game must be fully playable: real game logic, a score when relevant, and a clear win / lose / completion state.
-- Responsive layout (works on both desktop and mobile).
-- Visual style must be simple, colorful, and friendly for children.
+- Only allowed external resource: the local Iconify script.
+- Fully playable game with real logic, score (when relevant), and clear win/lose/completion state.
+- Must be responsive (works well on mobile and desktop).
+- Prefer relative units (em, rem, %) so icons and layout scale nicely with text.
+- Visual style: simple, colorful, friendly for children.
 
-GRAPHICS RULE — CRITICAL, READ THIS TWICE
+ICON SYSTEM — ICONIFY (COLORED ICONS)
 
-A fixed set of ready-made SVG icon files already exists inside the project.
+You must use Iconify for every icon.
 
-ICON DIRECTORY
+1. Always include this exact script in the <head>:
+<script src="assets/iconify-icon.min.js"></script>
 
-assets/icons/
+2. Use icons with the web component:
+<iconify-icon icon="collection:icon-name" style="font-size: 2.5em;"></iconify-icon>
 
-You do NOT draw graphics yourself.
+3. Strongly prefer colored icon sets:
+- twemoji
+- emojione
+- noto
+- fluent-emoji
+- openmoji
+- fluent-emoji-flat
 
-Whenever you need an icon, use a normal HTML image tag that points directly to the SVG file.
+You are free to use any valid icon from these collections. There is no limited list. Choose whatever icon fits the game best.
 
-Correct format:
+4. Size recommendation for responsive + text-heavy games:
+Use font-size with em units (example: style="font-size: 2.2em; vertical-align: -0.15em;")
 
-<img src="assets/icons/cat.svg" alt="cat">
+5. Strictly forbidden:
+- Writing any <svg> ... </svg>
+- Using <img src="assets/icons/...">
+- Using {{SVG:...}} placeholders
+- Using monotone/icon-font style icons when a colored version exists
+- Using CDN links
 
-or
+BEFORE ANSWERING — SELF CHECK
+- Iconify local script is present
+- Every icon is written as <iconify-icon icon="...">
+- Colored sets are preferred
+- No <svg> tags exist
+- Game is responsive
 
-<img src="assets/icons/apple.svg" alt="apple" class="icon">
-
-The server will NOT replace placeholders.
-The SVG files already exist on disk and must be referenced directly.
-
-AVAILABLE ICON IDS
-
-___SVG_MANIFEST___
-
-RULES
-
-1. ONLY use icon ids from the AVAILABLE ICON IDS list above.
-2. NEVER invent a new icon id.
-3. NEVER change the spelling of an icon id.
-4. NEVER generate SVG markup yourself.
-5. NEVER write <svg>...</svg>.
-6. NEVER use external images.
-7. NEVER use base64 images.
-8. NEVER use placeholder formats such as:
-   {{SVG:cat}}
-   {{SVG:apple}}
-9. To use an icon, create the path exactly like this:
-
-   assets/icons/ID.svg
-
-10. Examples:
-
-   <img src="assets/icons/cat.svg" alt="cat">
-   <img src="assets/icons/dog.svg" alt="dog">
-   <img src="assets/icons/apple.svg" alt="apple">
-
-11. If an icon needs custom sizing, use CSS or inline styles:
-
-   <img src="assets/icons/cat.svg" alt="cat" style="width:100px;height:100px;">
-
-12. If the game dynamically switches between icons at runtime, use a lookup object with full paths:
-
-   const icons = {
-       cat: 'assets/icons/cat.svg',
-       dog: 'assets/icons/dog.svg',
-       bird: 'assets/icons/bird.svg'
-   };
-
-13. Every icon path must be written as a static string.
-14. Never construct icon file names dynamically from user input.
-15. Every icon referenced in the game must come from the AVAILABLE ICON IDS list.
-
-BEFORE YOU ANSWER — SELF CHECK
-
-- Search your draft for "<svg". If found, remove it.
-- Search your draft for "{{SVG:". If found, replace it with an img tag.
-- Verify that every image path follows:
-
-  assets/icons/ID.svg
-
-- Verify that every ID exists in the AVAILABLE ICON IDS list.
-
-FINAL REMINDER
-
-Use ONLY SVG files from assets/icons/.
-Never generate SVG code yourself.
-Never use placeholders.
 Return only the final HTML document.
 PROMPT;
 
-    $prompt = str_replace('___SVG_MANIFEST___', $svgManifest, $template);
-    $prompt = str_replace('___CSSJS_MANIFEST___', $cssJsManifest, $prompt);
-    return $prompt;
+    return $template;
 }
 
 // ---------------------------------------------------------------------
