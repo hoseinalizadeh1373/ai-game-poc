@@ -492,69 +492,69 @@ PROMPT;
 function callAiApi(array $config, string $systemPrompt, string $userMessage, ?string $modelOverride = null): array
 {
 
-    sleep(30);
-    // $model = $modelOverride ?: ($config['model'] ?? 'gapgpt-qwen-3.6');
+    
+    $model = $modelOverride ?: ($config['model'] ?? 'gapgpt-qwen-3.6');
 
-    // $payload = [
-    //     'model' => $model,
-    //     'messages' => [
-    //         ['role' => 'system', 'content' => $systemPrompt],
-    //         ['role' => 'user', 'content' => $userMessage],
-    //     ],
-    // ];
+    $payload = [
+        'model' => $model,
+        'messages' => [
+            ['role' => 'system', 'content' => $systemPrompt],
+            ['role' => 'user', 'content' => $userMessage],
+        ],
+    ];
 
-    // $ch = curl_init($config['api_url']);
+    $ch = curl_init($config['api_url']);
 
-    // curl_setopt_array($ch, [
-    //     CURLOPT_RETURNTRANSFER => true,
-    //     CURLOPT_POST => true,
-    //     CURLOPT_HTTPHEADER => [
-    //         'Content-Type: application/json',
-    //         'Authorization: Bearer ' . $config['api_key'],
-    //     ],
-    //     CURLOPT_POSTFIELDS => json_encode($payload),
-    //     CURLOPT_TIMEOUT => 280,
-    //     CURLOPT_CONNECTTIMEOUT => 20,
-    // ]);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $config['api_key'],
+        ],
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_TIMEOUT => 280,
+        CURLOPT_CONNECTTIMEOUT => 20,
+    ]);
 
-    // $response = curl_exec($ch);
+    $response = curl_exec($ch);
 
-    // if ($response === false) {
-    //     $err     = curl_error($ch);
-    //     $errno   = curl_errno($ch);
-    //     curl_close($ch);
-    //     $isTimeout = in_array($errno, [CURLE_OPERATION_TIMEDOUT], true);
-    //     return [
-    //         'ok' => false,
-    //         'text' => null,
-    //         'error' => ($isTimeout ? 'مهلت زمانی درخواست به پایان رسید (timeout). ' : 'خطای ارتباط با API: ') . $err,
-    //     ];
-    // }
+    if ($response === false) {
+        $err     = curl_error($ch);
+        $errno   = curl_errno($ch);
+        curl_close($ch);
+        $isTimeout = in_array($errno, [CURLE_OPERATION_TIMEDOUT], true);
+        return [
+            'ok' => false,
+            'text' => null,
+            'error' => ($isTimeout ? 'مهلت زمانی درخواست به پایان رسید (timeout). ' : 'خطای ارتباط با API: ') . $err,
+        ];
+    }
 
-    // $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    // curl_close($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
 
-    // if ($httpCode < 200 || $httpCode >= 300) {
-    //     return ['ok' => false, 'text' => null, 'error' => "API Error ($httpCode): " . $response];
-    // }
+    if ($httpCode < 200 || $httpCode >= 300) {
+        return ['ok' => false, 'text' => null, 'error' => "API Error ($httpCode): " . $response];
+    }
 
-    // $data = json_decode($response, true);
-    // if (!$data) {
-    //     return ['ok' => false, 'text' => null, 'error' => 'پاسخ API قابل پردازش نیست.'];
-    // }
+    $data = json_decode($response, true);
+    if (!$data) {
+        return ['ok' => false, 'text' => null, 'error' => 'پاسخ API قابل پردازش نیست.'];
+    }
 
-    // $text = null;
-    // if (isset($data['choices'][0]['message']['content'])) {
-    //     $text = $data['choices'][0]['message']['content'];
-    // } elseif (isset($data['output_text'])) {
-    //     $text = $data['output_text'];
-    // }
+    $text = null;
+    if (isset($data['choices'][0]['message']['content'])) {
+        $text = $data['choices'][0]['message']['content'];
+    } elseif (isset($data['output_text'])) {
+        $text = $data['output_text'];
+    }
 
-    // if (!$text) {
-    //     return ['ok' => false, 'text' => null, 'error' => 'نتوانستم متن بازی تولیدشده را از پاسخ AI استخراج کنم.'];
-    // }
+    if (!$text) {
+        return ['ok' => false, 'text' => null, 'error' => 'نتوانستم متن بازی تولیدشده را از پاسخ AI استخراج کنم.'];
+    }
 
-    // return ['ok' => true, 'text' => $text, 'error' => null];
+    return ['ok' => true, 'text' => $text, 'error' => null];
 }
 
 // ---------------------------------------------------------------------
