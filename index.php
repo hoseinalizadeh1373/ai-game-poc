@@ -72,12 +72,12 @@ if (isset($_GET['play'])) {
 
     $userPrompt = trim($_POST['prompt'] ?? '');
     $count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
-    $selectedModel = $_POST['model'] ?? 'gapgpt-qwen-3.6'; // مقدار پیش‌فرض
+    $selectedModel = $_POST['model'] ?? 'deepseek-v4.1-flash'; // مقدار پیش‌فرض
 
     // اعتبارسنجی مدل
-    $allowedModels = ['gapgpt-qwen-3.6', 'claude-fable-5', 'claude-sonnet-5', 'gpt-6-sol', 'deepseek-v4.1-flash'];
+    $allowedModels = ['deepseek-v4.1-flash', 'claude-fable-5', 'claude-sonnet-5', 'gpt-6-sol'];
     if (!in_array($selectedModel, $allowedModels, true)) {
-        $selectedModel = 'gapgpt-qwen-3.6';
+        $selectedModel = 'deepseek-v4.1-flash';
     }
     if ($count !== null) {
         if ($count < 1)  $count = 1;
@@ -487,11 +487,10 @@ $games = listGames($gamesDir);
                     <div style="margin-bottom: 18px;">
                         <label for="model">مدل هوش مصنوعی</label>
                         <select name="model" id="model">
-                            <option value="gapgpt-qwen-3.6">Qwen 3.6 (پیشنهادی)</option>
+                            <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash (پیشنهادی)</option>
                             <option value="claude-fable-5">Claude Fable 5</option>
                             <option value="claude-sonnet-5">Claude Sonnet 5</option>
                             <option value="gpt-6-sol">GPT-6 Sol</option>
-                            <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash</option>
                         </select>
                     </div>
 

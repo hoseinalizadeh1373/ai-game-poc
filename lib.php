@@ -491,6 +491,8 @@ PROMPT;
  */
 function callAiApi(array $config, string $systemPrompt, string $userMessage, ?string $modelOverride = null): array
 {
+
+    
     $model = $modelOverride ?: ($config['model'] ?? 'gapgpt-qwen-3.6');
 
     $payload = [
@@ -665,4 +667,80 @@ function listGames(string $gamesDir): array
         return $b['created_at'] <=> $a['created_at'];
     });
     return $games;
+}
+
+// ---------------------------------------------------------------------
+// Generation lock (prevent concurrent AI requests)
+// ---------------------------------------------------------------------
+//
+// Only ONE generation is allowed at a time.
+// Method: atomic file creation with mode 'x' (fails if file already exists).
+// This works reliably on Windows, Linux, shared hosting, and PHP built-in server.
+//
+// - Lock file does not exist          → create it and proceed
+// - Lock file exists and is fresh     → reject with "server is busy"
+// - Lock file exists but is stale     → remove it and take over
+//
+// Always call releaseGenerationLock() when finished (use try/finally).
+
+define('GENERATION_LOCK_MAX_AGE', 300); // 5 minutes safety for crashed processes
+
+/**
+ * Tries to acquire the generation lock.
+ *
+ * @return array{ok:bool, error:?string}
+ */
+function acquireGenerationLock(string $lockFile): array
+{
+    $dir = dirname($lockFile);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+
+    // If a lock already exists, decide whether it is still valid
+    if (file_exists($lockFile)) {
+        $age = time() - (int) @filemtime($lockFile);
+
+        if ($age <= GENERATION_LOCK_MAX_AGE) {
+            // Fresh lock → another generation is running
+            return [
+                'ok'    => false,
+                'error' => 'الان سرور مشغول ساخت بازی دیگری است. لطفاً چند دقیقه دیگر دوباره تلاش کنید.',
+            ];
+        }
+
+        // Stale lock (process probably crashed) → remove it
+        @unlink($lockFile);
+    }
+
+    // Atomic create: mode 'x' fails if the file already exists
+    // This is the critical race-free step
+    $fp = @fopen($lockFile, 'x');
+    if ($fp === false) {
+        // Someone else just created the lock between our check and now
+        return [
+            'ok'    => false,
+            'error' => 'الان سرور مشغول ساخت بازی دیگری است. لطفاً چند دقیقه دیگر دوباره تلاش کنید.',
+        ];
+    }
+
+    // Write timestamp and close (we no longer need the handle)
+    fwrite($fp, (string) time());
+    fclose($fp);
+
+    return [
+        'ok'    => true,
+        'error' => null,
+    ];
+}
+
+/**
+ * Releases the generation lock.
+ * Always call this when the generation finishes (success or error).
+ */
+function releaseGenerationLock(string $lockFile): void
+{
+    if (file_exists($lockFile)) {
+        @unlink($lockFile);
+    }
 }
