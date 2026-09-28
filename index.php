@@ -88,56 +88,73 @@ if (isset($_GET['play'])) {
         $error = 'لطفاً توضیح بازی را وارد کنید.';
     } else {
 
-        $icons          = scanIconAssets($iconsDir);
-        $svgManifest    = buildSvgManifest($icons);
-        $baseCss        = loadBaseCss($assetsDir);
-        $baseJs         = loadBaseJs($assetsDir);
-        $cssJsManifest  = buildCssJsManifest($baseCss, $baseJs);
-        $systemPrompt   = buildSystemPrompt($svgManifest, $cssJsManifest);
+        // -------------------------------------------------------------
+        // Generation lock — only one AI request at a time
+        // -------------------------------------------------------------
+        $lockFile   = $gamesDir . '/.generating.lock';
+        $lockResult = acquireGenerationLock($lockFile);
 
-        $userMessage = 'درخواست کاربر: "' . $userPrompt . '"';
-        if ($count !== null) {
-            $userMessage .= "\n" . 'تعداد سوال/آیتم پیشنهادی (در صورتی که این نوع بازی به آن نیاز دارد): ' . $count;
-        }
-
-        $apiResult = callAiApi($config, $systemPrompt, $userMessage, $selectedModel);
-        if (!$apiResult['ok']) {
-            $error = $apiResult['error'];
+        if (!$lockResult['ok']) {
+            // Another generation is already running
+            $error = $lockResult['error'];
         } else {
 
-            $rawText = trim($apiResult['text']);
-            [$text, $hadExtraText] = extractHtmlDocument($rawText);
+            try {
+                $icons          = scanIconAssets($iconsDir);
+                $svgManifest    = buildSvgManifest($icons);
+                $baseCss        = loadBaseCss($assetsDir);
+                $baseJs         = loadBaseJs($assetsDir);
+                $cssJsManifest  = buildCssJsManifest($baseCss, $baseJs);
+                $systemPrompt   = buildSystemPrompt($svgManifest, $cssJsManifest);
 
-            if ($text === null) {
-                $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
-            } else {
+                $userMessage = 'درخواست کاربر: "' . $userPrompt . '"';
+                if ($count !== null) {
+                    $userMessage .= "\n" . 'تعداد سوال/آیتم پیشنهادی (در صورتی که این نوع بازی به آن نیاز دارد): ' . $count;
+                }
 
-                // must run BEFORE substitution: a compliant model's raw output
-                // never contains a literal "<svg" tag (only {{SVG:id}} placeholders)
-                $handDrawnCount = countHandDrawnSvg($text);
+                $apiResult = callAiApi($config, $systemPrompt, $userMessage, $selectedModel);
+                if (!$apiResult['ok']) {
+                    $error = $apiResult['error'];
+                } else {
 
-                [$text, $missingSvgs] = applySvgPlaceholders($text, $icons);
+                    $rawText = trim($apiResult['text']);
+                    [$text, $hadExtraText] = extractHtmlDocument($rawText);
 
-                // must run AFTER substitution: anything still matching "{{SVG"
-                // at this point means the placeholder was built dynamically
-                // (e.g. with a JS variable) and could never be resolved
-                $brokenSvgCount = countBrokenSvgPlaceholders($text);
+                    if ($text === null) {
+                        $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
+                    } else {
 
-                // must run on the RAW model output, before we inject our own
-                // <style> — otherwise we'd also match our own shared rules
-                $classCollisions = detectSharedClassCollisions($text, $baseCss);
+                        // must run BEFORE substitution: a compliant model's raw output
+                        // never contains a literal "<svg" tag (only {{SVG:id}} placeholders)
+                        $handDrawnCount = countHandDrawnSvg($text);
 
-                // fix up whatever path the model wrote for the Vazir font
-                // BEFORE injecting/saving, so the fix actually lands in the
-                // saved file (previously this ran too late to have any effect)
-                $text = normalizeFontPath($text);
-                $text = injectSharedAssets($text, $baseCss, $baseJs);
+                        [$text, $missingSvgs] = applySvgPlaceholders($text, $icons);
 
-                $resultHtml  = $text;
-                $resultTitle = extractGameTitle($text, $userPrompt);
+                        // must run AFTER substitution: anything still matching "{{SVG"
+                        // at this point means the placeholder was built dynamically
+                        // (e.g. with a JS variable) and could never be resolved
+                        $brokenSvgCount = countBrokenSvgPlaceholders($text);
 
-                $gameId = newGameId();
-                saveGame($gamesDir, $gameId, $resultHtml, $userPrompt, $selectedModel);
+                        // must run on the RAW model output, before we inject our own
+                        // <style> — otherwise we'd also match our own shared rules
+                        $classCollisions = detectSharedClassCollisions($text, $baseCss);
+
+                        // fix up whatever path the model wrote for the Vazir font
+                        // BEFORE injecting/saving, so the fix actually lands in the
+                        // saved file (previously this ran too late to have any effect)
+                        $text = normalizeFontPath($text);
+                        $text = injectSharedAssets($text, $baseCss, $baseJs);
+
+                        $resultHtml  = $text;
+                        $resultTitle = extractGameTitle($text, $userPrompt);
+
+                        $gameId = newGameId();
+                        saveGame($gamesDir, $gameId, $resultHtml, $userPrompt, $selectedModel);
+                    }
+                }
+            } finally {
+                // Always release the lock — even if an error or exception occurred
+                releaseGenerationLock($lockFile);
             }
         }
     }
@@ -474,7 +491,7 @@ $games = listGames($gamesDir);
             <a class="back-link" href="index.php">← بازگشت به خانه</a>
         <?php else: ?>
 
-            <div class="page-header">
+             <div class="page-header">
                 <h1>🎮 Mega Game</h1>
                 <p class="description">
                     با استفاده از هوش مصنوعی ، بازی بساز
