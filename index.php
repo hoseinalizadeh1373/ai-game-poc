@@ -624,7 +624,8 @@ $games = listGames($gamesDir);
                     const response = await axios.post('index.php', formData, {
                         headers: {
                             'X-Requested-With': 'XMLHttpRequest'
-                        }
+                        },
+                        timeout:300000
                     });
 
                     const data = response.data;
