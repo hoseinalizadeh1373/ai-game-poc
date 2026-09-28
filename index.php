@@ -28,6 +28,9 @@ $hadExtraText    = false;
 $resultHtml      = null;
 $resultTitle     = null;
 $gameId          = null;
+$gamePrompt      = null;
+$gameModel       = null;
+$gameLevel       = null;
 
 // -----------------------------------------------------------------
 // View: play a previously saved game
@@ -48,6 +51,7 @@ if (isset($_GET['play'])) {
             $resultTitle = extractGameTitle($html, $gameId);
             $gamePrompt  = getGamePrompt($gamesDir, $gameId);
             $gameModel   = getGameModel($gamesDir, $gameId);
+            $gameLevel   = getGameLevel($gamesDir, $gameId);
 
             // carried over from the AJAX create redirect (see below) so
             // warnings from the generation that just happened aren't lost
@@ -73,11 +77,18 @@ if (isset($_GET['play'])) {
     $userPrompt = trim($_POST['prompt'] ?? '');
     $count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
     $selectedModel = $_POST['model'] ?? 'gapgpt-qwen-3.6'; // مقدار پیش‌فرض
+    $selectedLevel = $_POST['level'] ?? 'simple'; // مقدار پیش‌فرض: ساده
 
     // اعتبارسنجی مدل
     $allowedModels = ['gapgpt-qwen-3.6', 'claude-fable-5', 'claude-sonnet-5', 'gpt-6-sol', 'deepseek-v4.1-flash'];
     if (!in_array($selectedModel, $allowedModels, true)) {
         $selectedModel = 'gapgpt-qwen-3.6';
+    }
+
+    // اعتبارسنجی سطح بازی
+    $allowedLevels = ['simple', 'advanced2d'];
+    if (!in_array($selectedLevel, $allowedLevels, true)) {
+        $selectedLevel = 'simple';
     }
     if ($count !== null) {
         if ($count < 1)  $count = 1;
@@ -93,7 +104,12 @@ if (isset($_GET['play'])) {
         $baseCss        = loadBaseCss($assetsDir);
         $baseJs         = loadBaseJs($assetsDir);
         $cssJsManifest  = buildCssJsManifest($baseCss, $baseJs);
-        $systemPrompt   = buildSystemPrompt($svgManifest, $cssJsManifest);
+
+        // سطح ساده => همان پرامپت/خروجی HTML+CSS+JS ساده‌ی قبلی
+        // سطح پیشرفته => همان قرارداد خروجی، با این تفاوت که بازی با Phaser 3 (دو‌بعدی) ساخته می‌شود
+        $systemPrompt = ($selectedLevel === 'advanced2d')
+            ? buildSystemPromptPhaser($svgManifest, $cssJsManifest)
+            : buildSystemPromptSimple($svgManifest, $cssJsManifest);
 
         $userMessage = 'درخواست کاربر: "' . $userPrompt . '"';
         if ($count !== null) {
@@ -131,13 +147,70 @@ if (isset($_GET['play'])) {
                 // BEFORE injecting/saving, so the fix actually lands in the
                 // saved file (previously this ran too late to have any effect)
                 $text = normalizeFontPath($text);
-                $text = injectSharedAssets($text, $baseCss, $baseJs);
 
-                $resultHtml  = $text;
-                $resultTitle = extractGameTitle($text, $userPrompt);
+                // فقط سطح پیشرفته به کتابخانه‌ی محلی Phaser نیاز دارد
+                // -------------------------------------------------------------
+// Advanced 2D:
+// Phaser + Vizura Runtime are injected by the server.
+// AI never controls the Phaser lifecycle.
+// -------------------------------------------------------------
+if ($selectedLevel === 'advanced2d') {
 
-                $gameId = newGameId();
-                saveGame($gamesDir, $gameId, $resultHtml, $userPrompt, $selectedModel);
+    $phaserJs  = loadPhaserJs($assetsDir);
+    $runtimeJs = loadVizuraRuntime($assetsDir);
+
+    if ($phaserJs === '') {
+        $error = 'فایل assets/phaser.min.js پیدا نشد.';
+    } elseif ($runtimeJs === '') {
+        $error = 'فایل assets/vizura-runtime.js پیدا نشد.';
+    } else {
+
+        // Static architecture validation BEFORE saving.
+        $validation = validateAdvanced2dGame($text);
+
+        if (!$validation['ok']) {
+
+            $error =
+                "ساختار بازی پیشرفته معتبر نیست:\n\n" .
+                implode("\n", $validation['errors']);
+
+        } else {
+
+            $text = injectAdvanced2dRuntime(
+                $text,
+                $phaserJs,
+                $runtimeJs
+            );
+        }
+    }
+}
+
+// Only inject shared assets if generation is still valid.
+if ($error === null) {
+    $text = injectSharedAssets(
+        $text,
+        $baseCss,
+        $baseJs
+    );
+
+    $resultHtml  = $text;
+    $resultTitle = extractGameTitle(
+        $text,
+        $userPrompt
+    );
+
+    $gameId = newGameId();
+
+    saveGame(
+        $gamesDir,
+        $gameId,
+        $resultHtml,
+        $userPrompt,
+        $selectedModel,
+        $selectedLevel
+    );
+}
+
             }
         }
     }
@@ -374,10 +447,18 @@ $games = listGames($gamesDir);
         <?php else: ?>
 
             <div class="description">
-                توضیح بده چه بازی‌ای می‌خواهی؛ هوش مصنوعی کل بازی (HTML، CSS، JS) را مستقیماً می‌سازد و فقط از آیکون‌های آماده‌ی پروژه استفاده می‌کند.
+                توضیح بده چه بازی آموزشی می‌خواهی؛ هوش مصنوعی بازی را بر اساس موتور Vizura تولید می‌کند. در سطح پیشرفته، Phaser و Runtime ثابت هستند و بازی با صحنهٔ دو‌بعدی، پس‌زمینهٔ گرادیان، کارت، سایه و انیمیشن ساخته می‌شود.
             </div>
 
             <form id="createGameForm">
+
+                <div style="margin-bottom: 15px;">
+                    <label for="level" style="color:#9ca3af; display:block; margin-bottom:6px;">سطح بازی:</label>
+                    <select name="level" id="level" style="width:100%; padding:12px; border-radius:8px; border:1px solid #374151; background:#1f2937; color:white; font-size:16px;">
+                        <option value="simple">ساده (HTML / CSS / JS)</option>
+                        <option value="advanced2d">پیشرفته — دو‌بعدی (Phaser)</option>
+                    </select>
+                </div>
 
                 <div style="margin-bottom: 15px;">
                     <label for="model" style="color:#9ca3af; display:block; margin-bottom:6px;">انتخاب مدل هوش مصنوعی:</label>
@@ -435,13 +516,16 @@ $games = listGames($gamesDir);
                         <?php if (!empty($gameModel)): ?>
                             <br><strong style="color:#a5b4fc;">مدل استفاده‌شده:</strong> <?= htmlspecialchars($gameModel) ?>
                         <?php endif; ?>
+                        <?php if (!empty($gameLevel)): ?>
+                            <br><strong style="color:#a5b4fc;">سطح بازی:</strong> <?= $gameLevel === 'advanced2d' ? 'پیشرفته — دو‌بعدی (Phaser)' : 'ساده (HTML / CSS / JS)' ?>
+                        <?php endif; ?>
                     </div>
                 <?php endif; ?>
 
                 <div style="font-family: 'Vazir' !important;">
                     <iframe
                         class="game-frame "
-                        sandbox="allow-scripts"
+                        sandbox="allow-scripts allow-same-origin"
                         style="font-family: 'Vazir', Tahoma, sans-serif !important;"
                         srcdoc="<?= htmlspecialchars($resultHtml, ENT_QUOTES, 'UTF-8') ?>"></iframe>
                 </div>
@@ -480,6 +564,7 @@ $games = listGames($gamesDir);
                 const promptInput = document.getElementById('prompt');
                 const countInput = document.getElementById('count');
                 const modelSelect = document.getElementById('model');
+                const levelSelect = document.getElementById('level');
                 const btn = document.getElementById('submitBtn');
                 const loading = document.getElementById('loading');
                 const errorBox = document.getElementById('ajaxError');
@@ -487,6 +572,7 @@ $games = listGames($gamesDir);
                 const prompt = promptInput.value.trim();
                 const count = countInput.value;
                 const model = modelSelect.value;
+                const level = levelSelect.value;
 
                 // پاک کردن خطای قبلی
                 errorBox.style.display = 'none';
@@ -507,6 +593,7 @@ $games = listGames($gamesDir);
                     const formData = new FormData();
                     formData.append('prompt', prompt);
                     formData.append('model', model);
+                    formData.append('level', level);
                     if (count) {
                         formData.append('count', count);
                     }
