@@ -177,9 +177,7 @@ $games = listGames($gamesDir);
     <title>AI Game Builder</title>
     <script src="assets/axios.min.js"></script>
     <style>
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         @font-face {
             font-family: 'Vazir';
@@ -192,173 +190,278 @@ $games = listGames($gamesDir);
         body {
             margin: 0;
             font-family: 'Vazir', Tahoma, Arial, sans-serif !important;
-            background: #111827;
-            color: white;
+            background: linear-gradient(160deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+            background-attachment: fixed;
+            color: #f1f5f9;
+            min-height: 100vh;
         }
 
         .container {
-            max-width: 1400px;
-            margin: auto;
-            padding: 30px;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 40px 24px 80px;
         }
 
-        h1 {
-            margin-top: 0;
+        /* Header */
+        .page-header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .page-header h1 {
+            margin: 0 0 12px;
+            font-size: clamp(1.8rem, 5vw, 2.4rem);
+            font-weight: 700;
+            background: linear-gradient(135deg, #a5b4fc, #c4b5fd, #f0abfc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
 
         .description {
-            color: #9ca3af;
-            margin-bottom: 25px;
+            color: #94a3b8;
+            font-size: 1.05rem;
+            line-height: 1.7;
+            max-width: 560px;
+            margin: 0 auto;
         }
 
-        textarea {
+        /* Form Card */
+        .form-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            border-radius: 20px;
+            padding: 28px;
+            margin-bottom: 48px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+        }
+
+        .form-card label {
+            display: block;
+            color: #94a3b8;
+            font-size: 0.9rem;
+            margin-bottom: 8px;
+        }
+
+        .form-card select,
+        .form-card textarea,
+        .form-card input[type="number"] {
             width: 100%;
-            min-height: 130px;
-            padding: 18px;
+            padding: 14px 16px;
             border-radius: 12px;
-            border: 1px solid #374151;
-            background: #1f2937;
-            color: white;
-            font-size: 16px;
-            resize: vertical;
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            background: rgba(15, 23, 42, 0.6);
+            color: #f1f5f9;
+            font-size: 15px;
+            font-family: inherit;
             outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
         }
 
-        .count-row {
+        .form-card select:focus,
+        .form-card textarea:focus,
+        .form-card input[type="number"]:focus {
+            border-color: #818cf8;
+            box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.2);
+        }
+
+        .form-card textarea {
+            min-height: 120px;
+            resize: vertical;
+            line-height: 1.6;
+        }
+
+        .form-row {
             display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-top: 15px;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-top: 16px;
+            align-items: flex-end;
         }
 
-        .count-row label {
-            color: #9ca3af;
+        .form-row .field {
+            flex: 1;
+            min-width: 140px;
         }
 
-        .count-row input {
-            width: 90px;
-            padding: 10px;
-            border-radius: 8px;
-            border: 1px solid #374151;
-            background: #1f2937;
-            color: white;
-            font-size: 16px;
+        .form-row input[type="number"] {
+            max-width: 120px;
         }
 
-        button {
-            margin-top: 15px;
-            margin-inline-end: 10px;
-            padding: 14px 28px;
+        button[type="submit"] {
+            margin-top: 20px;
+            padding: 14px 32px;
             border: 0;
-            border-radius: 10px;
-            background: #6366f1;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
             color: white;
             font-size: 16px;
+            font-weight: 600;
+            font-family: inherit;
             cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.2s;
+            box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35);
         }
 
-        button:hover {
-            background: #4f46e5;
+        button[type="submit"]:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 24px rgba(99, 102, 241, 0.45);
         }
 
-        button.secondary {
-            background: #10b981;
+        button[type="submit"]:active {
+            transform: translateY(0);
         }
 
-        button.secondary:hover {
-            background: #059669;
+        button[type="submit"]:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        #loading {
+            margin-top: 16px;
+            color: #a5b4fc;
+            font-size: 0.95rem;
         }
 
         .error {
-            margin-top: 20px;
-            padding: 15px;
-            border-radius: 10px;
-            background: #7f1d1d;
+            margin-top: 16px;
+            padding: 14px 18px;
+            border-radius: 12px;
+            background: rgba(127, 29, 29, 0.5);
+            border: 1px solid rgba(248, 113, 113, 0.3);
             color: #fecaca;
             direction: ltr;
             text-align: left;
             white-space: pre-wrap;
+            font-size: 0.9rem;
         }
 
-        .warning {
-            margin-top: 20px;
-            padding: 15px;
-            border-radius: 10px;
-            background: #78350f;
-            color: #fde68a;
-        }
-
+        /* Game play view */
         .game-container {
-            margin-top: 30px;
+            margin-top: 8px;
         }
 
         .game-header {
-            margin-bottom: 15px;
+            margin-bottom: 16px;
             display: flex;
             align-items: center;
             justify-content: space-between;
             flex-wrap: wrap;
-            gap: 10px;
+            gap: 12px;
+        }
+
+        .game-header h2 {
+            margin: 0;
+            font-size: 1.35rem;
+            font-weight: 600;
+        }
+
+        .prompt-box {
+            background: rgba(30, 41, 59, 0.6);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            border-radius: 14px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            color: #e2e8f0;
+            line-height: 1.7;
+            font-size: 0.95rem;
+        }
+
+        .prompt-box strong {
+            color: #a5b4fc;
+        }
+
+        .game-frame-wrap {
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            background: #fff;
         }
 
         .game-frame {
             width: 100%;
-            height: 700px;
-            border: 2px solid #374151;
-            border-radius: 15px;
+            height: min(78vh, 820px);
+            min-height: 480px;
+            border: 0;
+            display: block;
             background: white;
         }
 
+        /* Games list */
         .games-list {
-            margin-top: 50px;
+            margin-top: 16px;
         }
 
         .games-list h2 {
-            border-bottom: 1px solid #374151;
-            padding-bottom: 10px;
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin: 0 0 20px;
+            color: #e2e8f0;
         }
 
         .games-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-            gap: 16px;
-            margin-top: 20px;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 14px;
         }
 
         .game-card {
-            background: #1f2937;
-            border: 1px solid #374151;
-            border-radius: 12px;
-            padding: 16px;
+            background: rgba(30, 41, 59, 0.65);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            border-radius: 14px;
+            padding: 18px;
             text-decoration: none;
-            color: white;
+            color: #f1f5f9;
             display: block;
+            transition: border-color 0.2s, transform 0.15s, box-shadow 0.2s;
         }
 
         .game-card:hover {
-            border-color: #6366f1;
+            border-color: #818cf8;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.15);
         }
 
         .game-card .title {
-            font-weight: bold;
+            font-weight: 600;
             margin-bottom: 6px;
+            font-size: 0.98rem;
+            line-height: 1.4;
         }
 
         .game-card .meta {
-            color: #9ca3af;
-            font-size: 13px;
+            color: #64748b;
+            font-size: 0.8rem;
         }
 
         .back-link {
-            display: inline-block;
-            margin-bottom: 15px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 20px;
             color: #a5b4fc;
             text-decoration: none;
+            font-size: 0.95rem;
+            transition: color 0.15s;
+        }
+
+        .back-link:hover {
+            color: #c7d2fe;
         }
 
         .empty {
-            color: #6b7280;
-            margin-top: 20px;
+            color: #64748b;
+            font-size: 0.95rem;
+            padding: 24px 0;
+        }
+
+        @media (max-width: 640px) {
+            .container { padding: 24px 16px 60px; }
+            .form-card { padding: 20px; }
+            .game-frame { min-height: 420px; height: 70vh; }
         }
     </style>
 </head>
@@ -367,52 +470,60 @@ $games = listGames($gamesDir);
 
     <div class="container">
 
-        <h1>🎮 AI Game Builder</h1>
-
         <?php if ($view === 'play'): ?>
             <a class="back-link" href="index.php">← بازگشت به خانه</a>
         <?php else: ?>
 
-            <div class="description">
-                توضیح بده چه بازی‌ای می‌خواهی؛ هوش مصنوعی کل بازی (HTML، CSS، JS) را مستقیماً می‌سازد و فقط از آیکون‌های آماده‌ی پروژه استفاده می‌کند.
+            <div class="page-header">
+                <h1>🎮 Mega Game</h1>
+                <p class="description">
+                    با استفاده از هوش مصنوعی ، بازی بساز
+                </p>
             </div>
 
-            <form id="createGameForm">
+            <div class="form-card">
+                <form id="createGameForm">
 
-                <div style="margin-bottom: 15px;">
-                    <label for="model" style="color:#9ca3af; display:block; margin-bottom:6px;">انتخاب مدل هوش مصنوعی:</label>
-                    <select name="model" id="model" style="width:100%; padding:12px; border-radius:8px; border:1px solid #374151; background:#1f2937; color:white; font-size:16px;">
-                        <option value="gapgpt-qwen-3.6">Qwen 3.6 (پیشنهادی)</option>
-                        <option value="claude-fable-5">Claude Fable 5</option>
-                        <option value="claude-sonnet-5">Claude Sonnet 5</option>
-                        <option value="gpt-6-sol">GPT-6 Sol</option>
-                        <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash</option>
-                    </select>
-                </div>
+                    <div style="margin-bottom: 18px;">
+                        <label for="model">مدل هوش مصنوعی</label>
+                        <select name="model" id="model">
+                            <option value="gapgpt-qwen-3.6">Qwen 3.6 (پیشنهادی)</option>
+                            <option value="claude-fable-5">Claude Fable 5</option>
+                            <option value="claude-sonnet-5">Claude Sonnet 5</option>
+                            <option value="gpt-6-sol">GPT-6 Sol</option>
+                            <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash</option>
+                        </select>
+                    </div>
 
-                <textarea
-                    name="prompt"
-                    id="prompt"
-                    placeholder="مثلاً: کوییز میوه‌ها برای کودکان ۵ ساله که هنوز خواندن و نوشتن بلد نیستند..."></textarea>
+                    <div style="margin-bottom: 4px;">
+                        <label for="prompt">توضیح بازی</label>
+                        <textarea
+                            name="prompt"
+                            id="prompt"
+                            placeholder="مثلاً: کوییز میوه‌ها برای کودکان ۵ ساله که هنوز خواندن و نوشتن بلد نیستند..."></textarea>
+                    </div>
 
-                <div class="count-row">
-                    <label for="count">تعداد سوال / آیتم (اختیاری):</label>
-                    <input
-                        type="number"
-                        id="count"
-                        name="count"
-                        min="1"
-                        max="30"
-                        placeholder="مثلاً 5">
-                </div>
+                    <div class="form-row">
+                        <div class="field">
+                            <label for="count">تعداد سوال / آیتم (اختیاری)</label>
+                            <input
+                                type="number"
+                                id="count"
+                                name="count"
+                                min="1"
+                                max="30"
+                                placeholder="مثلاً ۵">
+                        </div>
+                    </div>
 
-                <button type="submit" id="submitBtn">🚀 ساخت بازی</button>
+                    <button type="submit" id="submitBtn">🚀 ساخت بازی</button>
 
-                <div id="loading" style="display:none; margin-top:12px; color:#9ca3af;">
-                    ⏳ در حال ساخت بازی... (ممکن است تا چند دقیقه طول بکشد)
-                </div>
-                <div id="ajaxError" class="error" style="display:none;"></div>
-            </form>
+                    <div id="loading" style="display:none;">
+                        ⏳ در حال ساخت بازی... (ممکن است تا چند دقیقه طول بکشد)
+                    </div>
+                    <div id="ajaxError" class="error" style="display:none;"></div>
+                </form>
+            </div>
 
         <?php endif; ?>
 
@@ -429,25 +540,25 @@ $games = listGames($gamesDir);
                 </div>
 
                 <?php if (!empty($gamePrompt)): ?>
-                    <div class="prompt-box" style="background:#1f2937; border:1px solid #374151; border-radius:12px; padding:16px; margin-bottom:20px; color:#e5e7eb; line-height:1.7;">
-                        <strong style="color:#a5b4fc;">پرامپت اصلی:</strong><br>
+                    <div class="prompt-box">
+                        <strong>پرامپت اصلی:</strong><br>
                         <?= nl2br(htmlspecialchars($gamePrompt)) ?>
                         <?php if (!empty($gameModel)): ?>
-                            <br><strong style="color:#a5b4fc;">مدل استفاده‌شده:</strong> <?= htmlspecialchars($gameModel) ?>
+                            <br><strong>مدل استفاده‌شده:</strong> <?= htmlspecialchars($gameModel) ?>
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>
 
-                <div style="font-family: 'Vazir' !important;">
+                <div class="game-frame-wrap">
                     <iframe
-                        class="game-frame "
-                        sandbox="allow-scripts"
-                        style="font-family: 'Vazir', Tahoma, sans-serif !important;"
+                        class="game-frame"
+                        sandbox="allow-scripts allow-same-origin"
                         srcdoc="<?= htmlspecialchars($resultHtml, ENT_QUOTES, 'UTF-8') ?>"></iframe>
                 </div>
             </div>
 
         <?php endif; ?>
+
         <?php if ($view !== 'play'): ?>
 
             <div class="games-list">
