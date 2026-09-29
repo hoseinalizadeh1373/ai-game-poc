@@ -176,6 +176,7 @@ $games = listGames($gamesDir);
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Game Builder</title>
     <script src="assets/axios.min.js"></script>
+    <script src="assets/game-refine.js?v=<?= (int) @filemtime(__DIR__ . '/assets/game-refine.js') ?>"></script>
     <style>
         * { box-sizing: border-box; }
 
@@ -536,6 +537,9 @@ $games = listGames($gamesDir);
 
                 <div class="game-header">
                     <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?></h2>
+                    <?php if (!empty($gameId)): ?>
+                        <button type="button" class="gr-trigger" data-game-refine="<?= htmlspecialchars($gameId) ?>">🛠️ ویرایش و رفع باگ</button>
+                    <?php endif; ?>
                 </div>
 
                 <?php if (!empty($gamePrompt)): ?>
