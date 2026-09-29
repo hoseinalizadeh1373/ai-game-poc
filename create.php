@@ -1,0 +1,490 @@
+<?php
+
+set_time_limit(300);
+
+require __DIR__ . '/lib.php';
+
+$config = require __DIR__ . '/config.php';
+
+$baseDir   = __DIR__;
+$assetsDir = $baseDir . '/assets';
+$iconsDir  = $assetsDir . '/icons';
+$gamesDir  = $baseDir . '/games';
+$dataDir   = $baseDir . '/data';
+
+ensureDir($iconsDir);
+ensureDir($gamesDir);
+ensureProtectedDir($dataDir);
+ensureDir($dataDir . '/results');
+
+// unique player id (cookie) — must run before any output
+$playerId = getOrCreatePlayerId();
+
+$error           = null;
+$missingSvgs     = [];
+$handDrawnCount  = 0;
+$brokenSvgCount  = 0;
+$classCollisions = [];
+$hadExtraText    = false;
+$gameId          = null;
+
+// -----------------------------------------------------------------
+// Action: create a new game
+// -----------------------------------------------------------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    $userPrompt = trim($_POST['prompt'] ?? '');
+    $creator    = sanitizeCreatorName((string) ($_POST['creator'] ?? ''));
+    $count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
+    $selectedModel = $_POST['model'] ?? 'deepseek-v4.1-flash';
+
+    $allowedModels = ['deepseek-v4.1-flash', 'claude-fable-5', 'claude-sonnet-5', 'gpt-6-sol'];
+    if (!in_array($selectedModel, $allowedModels, true)) {
+        $selectedModel = 'deepseek-v4.1-flash';
+    }
+    if ($count !== null) {
+        if ($count < 1)  $count = 1;
+        if ($count > 30) $count = 30;
+    }
+
+    if ($userPrompt === '') {
+        $error = 'لطفاً توضیح بازی را وارد کنید.';
+    } elseif ($creator === '') {
+        $error = 'لطفاً نام کاربری خود را وارد کنید.';
+    } else {
+
+        // Only ONE generation at a time (see lib.php for details)
+        $lockFile = $dataDir . '/.generation.lock';
+        $lock = acquireGenerationLock($lockFile);
+
+        if (!$lock['ok']) {
+            $error = $lock['error'];
+        } else {
+            try {
+                $icons          = scanIconAssets($iconsDir);
+                $svgManifest    = buildSvgManifest($icons);
+                $baseCss        = loadBaseCss($assetsDir);
+                $baseJs         = loadBaseJs($assetsDir);
+                $cssJsManifest  = buildCssJsManifest($baseCss, $baseJs);
+                $systemPrompt   = buildSystemPrompt($svgManifest, $cssJsManifest);
+
+                $userMessage = 'درخواست کاربر: "' . $userPrompt . '"';
+                if ($count !== null) {
+                    $userMessage .= "\n" . 'تعداد سوال/آیتم پیشنهادی (در صورتی که این نوع بازی به آن نیاز دارد): ' . $count;
+                }
+
+                $apiResult = callAiApi($config, $systemPrompt, $userMessage, $selectedModel);
+                if (!$apiResult['ok']) {
+                    $error = $apiResult['error'];
+                } else {
+
+                    $rawText = trim($apiResult['text']);
+                    [$text, $hadExtraText] = extractHtmlDocument($rawText);
+
+                    if ($text === null) {
+                        $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
+                    } else {
+
+                        // must run BEFORE substitution: a compliant model's raw output
+                        // never contains a literal "<svg" tag (only {{SVG:id}} placeholders)
+                        $handDrawnCount = countHandDrawnSvg($text);
+
+                        [$text, $missingSvgs] = applySvgPlaceholders($text, $icons);
+
+                        // must run AFTER substitution: anything still matching "{{SVG"
+                        // at this point means the placeholder was built dynamically
+                        $brokenSvgCount = countBrokenSvgPlaceholders($text);
+
+                        // must run on the RAW model output, before we inject our own
+                        // <style> — otherwise we'd also match our own shared rules
+                        $classCollisions = detectSharedClassCollisions($text, $baseCss);
+
+                        // fix up whatever path the model wrote for the Vazir font
+                        $text = normalizeFontPath($text);
+                        // GameStats runtime goes first, so it is defined before any AI code
+                        $text = injectSharedAssets($text, $baseCss, buildGameStatsRuntime() . "\n" . $baseJs);
+
+                        $title = extractGameTitle($text, $userPrompt);
+
+                        $gameId = newGameId();
+                        saveGame($gamesDir, $gameId, $text, $userPrompt, $selectedModel, $creator);
+                        initGameResultsFile($dataDir, $gamesDir, $gameId);
+                    }
+                }
+            } finally {
+                releaseGenerationLock($lockFile);
+            }
+        }
+    }
+
+    // AJAX requests get a small JSON response instead of the full page
+    $isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH'])
+        && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+
+    if ($isAjax) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok'              => $error === null,
+            'error'           => $error,
+            'gameId'          => $gameId,
+            'missingSvgs'     => $missingSvgs,
+            'handDrawnCount'  => $handDrawnCount,
+            'brokenSvgCount'  => $brokenSvgCount,
+            'classCollisions' => $classCollisions,
+            'hadExtraText'    => $hadExtraText,
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+}
+
+?>
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ساخت بازی | Mega Game</title>
+    <script src="assets/axios.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+
+        @font-face {
+            font-family: 'Vazir';
+            src: url('assets/fonts/vazir.woff') format('woff');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'Vazir', Tahoma, Arial, sans-serif !important;
+            background: linear-gradient(160deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+            background-attachment: fixed;
+            color: #f1f5f9;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 40px 24px 80px;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 20px;
+            color: #a5b4fc;
+            text-decoration: none;
+            font-size: 0.95rem;
+            transition: color 0.15s;
+        }
+
+        .back-link:hover { color: #c7d2fe; }
+
+        .page-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .page-header h1 {
+            margin: 0 0 12px;
+            font-size: clamp(1.6rem, 5vw, 2.1rem);
+            font-weight: 700;
+            background: linear-gradient(135deg, #a5b4fc, #c4b5fd, #f0abfc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .description {
+            color: #94a3b8;
+            font-size: 1rem;
+            line-height: 1.7;
+            margin: 0 auto;
+        }
+
+        .form-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            border-radius: 20px;
+            padding: 28px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+        }
+
+        .form-card label {
+            display: block;
+            color: #94a3b8;
+            font-size: 0.9rem;
+            margin-bottom: 8px;
+        }
+
+        .form-card select,
+        .form-card textarea,
+        .form-card input[type="text"],
+        .form-card input[type="number"] {
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            background: rgba(15, 23, 42, 0.6);
+            color: #f1f5f9;
+            font-size: 15px;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .form-card select:focus,
+        .form-card textarea:focus,
+        .form-card input[type="text"]:focus,
+        .form-card input[type="number"]:focus {
+            border-color: #818cf8;
+            box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.2);
+        }
+
+        .form-card textarea {
+            min-height: 120px;
+            resize: vertical;
+            line-height: 1.6;
+        }
+
+        .field { margin-bottom: 18px; }
+
+        .form-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-top: 16px;
+            align-items: flex-end;
+        }
+
+        .form-row .field { flex: 1; min-width: 140px; margin-bottom: 0; }
+
+        .form-row input[type="number"] { max-width: 120px; }
+
+        button[type="submit"] {
+            margin-top: 24px;
+            width: 100%;
+            padding: 14px 32px;
+            border: 0;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.2s;
+            box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35);
+        }
+
+        button[type="submit"]:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 24px rgba(99, 102, 241, 0.45);
+        }
+
+        button[type="submit"]:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        #loading {
+            margin-top: 16px;
+            color: #a5b4fc;
+            font-size: 0.95rem;
+            text-align: center;
+        }
+
+        .error {
+            margin-top: 16px;
+            padding: 14px 18px;
+            border-radius: 12px;
+            background: rgba(127, 29, 29, 0.5);
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            color: #fecaca;
+            font-size: 0.9rem;
+            line-height: 1.7;
+            white-space: pre-wrap;
+        }
+
+        @media (max-width: 640px) {
+            .container { padding: 24px 16px 60px; }
+            .form-card { padding: 20px; }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+
+        <a class="back-link" href="index.php">← بازگشت به لیست بازی‌ها</a>
+
+        <div class="page-header">
+            <h1>🚀 ساخت بازی جدید</h1>
+            <p class="description">
+                توضیح بده چه بازی‌ای می‌خوای، هوش مصنوعی برات می‌سازدش
+            </p>
+        </div>
+
+        <div class="form-card">
+            <form id="createGameForm">
+
+                <div class="field">
+                    <label for="creator">نام کاربری شما (سازنده بازی)</label>
+                    <input
+                        type="text"
+                        name="creator"
+                        id="creator"
+                        maxlength="40"
+                        autocomplete="username"
+                        placeholder="مثلاً: parsa">
+                </div>
+
+                <div class="field">
+                    <label for="model">مدل هوش مصنوعی</label>
+                    <select name="model" id="model">
+                        <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash (پیشنهادی)</option>
+                        <option value="claude-fable-5">Claude Fable 5</option>
+                        <option value="claude-sonnet-5">Claude Sonnet 5</option>
+                        <option value="gpt-6-sol">GPT-6 Sol</option>
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="prompt">توضیح بازی</label>
+                    <textarea
+                        name="prompt"
+                        id="prompt"
+                        placeholder="مثلاً: کوییز میوه‌ها برای کودکان ۵ ساله که هنوز خواندن و نوشتن بلد نیستند..."></textarea>
+                </div>
+
+                <div class="form-row">
+                    <div class="field">
+                        <label for="count">تعداد سوال / آیتم (اختیاری)</label>
+                        <input
+                            type="number"
+                            id="count"
+                            name="count"
+                            min="1"
+                            max="30"
+                            placeholder="مثلاً ۵">
+                    </div>
+                </div>
+
+                <button type="submit" id="submitBtn">🚀 ساخت بازی</button>
+
+                <div id="loading" style="display:none;">
+                    ⏳ در حال ساخت بازی... (ممکن است تا چند دقیقه طول بکشد)
+                </div>
+
+                <?php if ($error): ?>
+                    <div class="error"><?= htmlspecialchars($error) ?></div>
+                <?php endif; ?>
+
+                <div id="ajaxError" class="error" style="display:none;"></div>
+            </form>
+        </div>
+
+    </div>
+
+    <script>
+        const createGameForm = document.getElementById('createGameForm');
+        if (createGameForm) {
+            // remember the creator name on this browser (convenience only)
+            try {
+                const savedName = localStorage.getItem('creatorName');
+                const ci = document.getElementById('creator');
+                if (savedName && ci && !ci.value) ci.value = savedName;
+            } catch (e) {}
+
+            createGameForm.addEventListener('submit', async function(e) {
+                e.preventDefault();
+
+                const promptInput = document.getElementById('prompt');
+                const countInput = document.getElementById('count');
+                const modelSelect = document.getElementById('model');
+                const btn = document.getElementById('submitBtn');
+                const loading = document.getElementById('loading');
+                const errorBox = document.getElementById('ajaxError');
+
+                const prompt = promptInput.value.trim();
+                const creator = document.getElementById('creator').value.trim();
+                const count = countInput.value;
+                const model = modelSelect.value;
+
+                errorBox.style.display = 'none';
+                errorBox.textContent = '';
+
+                if (!prompt) {
+                    errorBox.style.display = 'block';
+                    errorBox.textContent = 'لطفاً توضیح بازی را وارد کنید.';
+                    return;
+                }
+
+                if (!creator) {
+                    errorBox.style.display = 'block';
+                    errorBox.textContent = 'لطفاً نام کاربری خود را وارد کنید.';
+                    return;
+                }
+                try { localStorage.setItem('creatorName', creator); } catch (e) {}
+
+                btn.disabled = true;
+                btn.textContent = 'در حال ارسال...';
+                loading.style.display = 'block';
+
+                try {
+                    const formData = new FormData();
+                    formData.append('prompt', prompt);
+                    formData.append('model', model);
+                    formData.append('creator', creator);
+                    if (count) formData.append('count', count);
+
+                    const response = await axios.post('create.php', formData, {
+                        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                        timeout: 300000
+                    });
+
+                    const data = response.data;
+
+                    if (data.ok && data.gameId) {
+                        // redirect straight to the play page for the new game
+                        let url = 'play.php?id=' + encodeURIComponent(data.gameId);
+                        if (data.missingSvgs && data.missingSvgs.length) {
+                            url += '&missing=' + encodeURIComponent(data.missingSvgs.join(','));
+                        }
+                        if (data.handDrawnCount) url += '&handdrawn=' + encodeURIComponent(data.handDrawnCount);
+                        if (data.brokenSvgCount) url += '&broken=' + encodeURIComponent(data.brokenSvgCount);
+                        if (data.classCollisions && data.classCollisions.length) {
+                            url += '&collide=' + encodeURIComponent(data.classCollisions.join(','));
+                        }
+                        if (data.hadExtraText) url += '&extratext=1';
+                        window.location.href = url;
+                        return;
+                    }
+
+                    errorBox.style.display = 'block';
+                    errorBox.textContent = data.error || 'خطای نامشخص از سرور.';
+
+                } catch (err) {
+                    console.error(err);
+                    errorBox.style.display = 'block';
+                    errorBox.textContent = 'خطا در ارتباط با سرور. دوباره تلاش کنید.';
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '🚀 ساخت بازی';
+                    loading.style.display = 'none';
+                }
+            });
+        }
+    </script>
+
+</body>
+
+</html>

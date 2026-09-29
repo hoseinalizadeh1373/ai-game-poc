@@ -26,6 +26,248 @@ function newGameId(): string
 }
 
 // ---------------------------------------------------------------------
+// Player identity (cookie) + creator name
+// ---------------------------------------------------------------------
+
+define('PLAYER_COOKIE_NAME', 'player_id');
+
+/**
+ * Creates the directory and drops an .htaccess that denies direct web
+ * access (Apache). For nginx, add a `location /data { deny all; }` rule.
+ */
+function ensureProtectedDir(string $path): void
+{
+    ensureDir($path);
+    $ht = $path . '/.htaccess';
+    if (!file_exists($ht)) {
+        @file_put_contents(
+            $ht,
+            "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n"
+        );
+    }
+}
+
+function isValidPlayerId(string $id): bool
+{
+    return (bool) preg_match('/^p_[a-f0-9]{16}$/', $id);
+}
+
+/**
+ * Returns the unique id of the current visitor. The id lives in a cookie;
+ * if the cookie is missing (first visit, or the user deleted it) a fresh
+ * id is generated — for now a deleted cookie simply means a new player.
+ * The cookie is re-sent on every request so its expiry keeps sliding.
+ * MUST be called before any output is sent.
+ */
+function getOrCreatePlayerId(): string
+{
+    $id = isset($_COOKIE[PLAYER_COOKIE_NAME]) ? (string) $_COOKIE[PLAYER_COOKIE_NAME] : '';
+
+    if (!isValidPlayerId($id)) {
+        $id = 'p_' . bin2hex(random_bytes(8));
+    }
+
+    setcookie(PLAYER_COOKIE_NAME, $id, [
+        'expires'  => time() + 60 * 60 * 24 * 365 * 5,
+        'path'     => '/',
+        'secure'   => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
+    $_COOKIE[PLAYER_COOKIE_NAME] = $id;
+
+    return $id;
+}
+
+/**
+ * Cleans the creator's username: single line, no tags, max 40 chars.
+ * Also safe to embed inside an HTML comment (no "<", ">" at all).
+ */
+function sanitizeCreatorName(string $name): string
+{
+    $name = strip_tags($name);
+    $name = str_replace(['<', '>'], '', $name);
+    $name = preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $name) ?? '';
+    $name = preg_replace('/\s+/u', ' ', $name) ?? '';
+    $name = trim($name);
+    return function_exists('mb_substr') ? mb_substr($name, 0, 40) : substr($name, 0, 40);
+}
+
+// ---------------------------------------------------------------------
+// Game results database (data/results/<gameId>.json — one file per game)
+// ---------------------------------------------------------------------
+
+function gameResultsFile(string $dataDir, string $gameId): string
+{
+    return $dataDir . '/results/' . $gameId . '.json';
+}
+
+/** Header/meta part of a game's results file. */
+function newResultsDoc(string $gamesDir, string $gameId): array
+{
+    $html = loadGame($gamesDir, $gameId);
+    $file = $gamesDir . '/' . $gameId . '.html';
+
+    return [
+        'game_id'      => $gameId,
+        'title'        => $html !== null ? extractGameTitle($html, $gameId) : $gameId,
+        'creator_name' => $html !== null ? extractCreatorFromHtml($html) : null,
+        'created_at'   => date('c', file_exists($file) ? (int) filemtime($file) : time()),
+        'results'      => [],
+    ];
+}
+
+/** Creates the (empty) results file right after a game is generated. */
+function initGameResultsFile(string $dataDir, string $gamesDir, string $gameId): void
+{
+    $file = gameResultsFile($dataDir, $gameId);
+    ensureDir(dirname($file));
+    if (!file_exists($file)) {
+        file_put_contents(
+            $file,
+            json_encode(newResultsDoc($gamesDir, $gameId), JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
+            LOCK_EX
+        );
+    }
+}
+
+/**
+ * Validates/clamps the data coming from the browser. Never trust it:
+ * anybody can POST to the endpoint.
+ */
+function sanitizeResultPayload(array $in, string $playerId): array
+{
+    $num = function ($v, float $min, float $max) {
+        if ($v === null || $v === '' || is_bool($v) || !is_numeric($v)) {
+            return null;
+        }
+        $v = max($min, min($max, (float) $v));
+        return $v == (int) $v ? (int) $v : round($v, 1);
+    };
+
+    $tracksErrors = !empty($in['tracks_errors']);
+    $errors       = $tracksErrors ? $num($in['errors'] ?? null, 0, 100000) : null;
+
+    return [
+        'played_at'     => date('c'),
+        'user_id'       => $playerId,
+        'duration_sec'  => $num($in['duration_sec'] ?? null, 0, 86400),
+        'tracks_errors' => $tracksErrors,
+        'errors'        => $errors,
+        'score'         => $num($in['score'] ?? null, -1000000, 1000000),
+        'total'         => $num($in['total'] ?? null, 0, 1000000),
+        'won'           => (isset($in['won']) && is_bool($in['won'])) ? $in['won'] : null,
+        // true = the game never called GameStats.start(); duration is then
+        // measured from page load and is less reliable
+        'start_missing' => !empty($in['start_missing']),
+    ];
+}
+
+/** Appends one play result to the game's own JSON file (locked, race-free). */
+function appendGameResult(string $dataDir, string $gamesDir, string $gameId, array $record): bool
+{
+    $file = gameResultsFile($dataDir, $gameId);
+    ensureDir(dirname($file));
+
+    $fp = @fopen($file, 'c+');
+    if ($fp === false) {
+        return false;
+    }
+    if (!flock($fp, LOCK_EX)) {
+        fclose($fp);
+        return false;
+    }
+
+    $raw = stream_get_contents($fp);
+    $doc = ($raw !== false && $raw !== '') ? json_decode($raw, true) : null;
+    if (!is_array($doc) || !isset($doc['results']) || !is_array($doc['results'])) {
+        $doc = newResultsDoc($gamesDir, $gameId);
+    }
+
+    $doc['results'][] = $record;
+
+    rewind($fp);
+    ftruncate($fp, 0);
+    fwrite($fp, json_encode($doc, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+    fflush($fp);
+    flock($fp, LOCK_UN);
+    fclose($fp);
+
+    return true;
+}
+
+/**
+ * JavaScript injected into every generated game (before the AI's own
+ * code). The AI only CALLS window.GameStats; timing, error counting and
+ * sending the result to the parent page all happen here, so a weak model
+ * cannot get them wrong.
+ */
+function buildGameStatsRuntime(): string
+{
+    return <<<'JS'
+(function () {
+  var run = null;
+
+  function nowMs() {
+    return (window.performance && typeof performance.now === 'function') ? performance.now() : Date.now();
+  }
+  function num(v) {
+    if (v === null || v === undefined || v === '' || typeof v === 'boolean') { return null; }
+    v = Number(v);
+    return isFinite(v) ? v : null;
+  }
+  // startMissing: the game never called start() -> measure from page load
+  function newRun(tracksErrors, startMissing) {
+    return {
+      t0: startMissing ? 0 : nowMs(),
+      errors: 0,
+      tracksErrors: !!tracksErrors,
+      startMissing: !!startMissing,
+      finished: false,
+      summary: null
+    };
+  }
+
+  window.GameStats = {
+    start: function (opts) {
+      run = newRun(opts && opts.tracksErrors, false);
+    },
+    mistake: function () {
+      if (!run) { run = newRun(true, true); }
+      if (run.finished) { return; }
+      run.tracksErrors = true;
+      run.errors++;
+    },
+    finish: function (result) {
+      if (!run) { run = newRun(false, true); }
+      if (run.finished) { return run.summary; }
+      result = result || {};
+
+      var durationSec = Math.round((nowMs() - run.t0) / 100) / 10;
+      run.finished = true;
+      run.summary = { durationSec: durationSec, errors: run.tracksErrors ? run.errors : null };
+
+      var payload = {
+        duration_sec: durationSec,
+        errors: run.summary.errors,
+        tracks_errors: run.tracksErrors,
+        score: num(result.score),
+        total: num(result.total),
+        won: (result.won === true || result.won === false) ? result.won : null,
+        start_missing: run.startMissing
+      };
+      try {
+        window.parent.postMessage({ source: 'game-stats', type: 'finish', payload: payload }, '*');
+      } catch (e) {}
+
+      return run.summary;
+    }
+  };
+})();
+JS;
+}
+
+// ---------------------------------------------------------------------
 // Icon assets (assets/icons/*.svg)
 // ---------------------------------------------------------------------
 
@@ -449,6 +691,31 @@ Rules:
 - Do not use external .mp3 / .wav files or base64 audio.
 - Create a small reusable sound helper function.
 
+START SCREEN & GAME FLOW — REQUIRED
+- Every game must open with a start screen that has one clear "شروع بازی" (Start) button. Real play — and the timer — begins only when the player presses it.
+- Every game must end with a clear final result screen (win / lose / completed) that offers a "بازی دوباره" (Play again) button. Pressing it returns to real play and counts as a NEW start.
+
+GAME STATISTICS — REQUIRED (GameStats)
+The platform ALREADY injects a global object named GameStats into the page. Do NOT define, redefine, copy, wrap, or import it. You only CALL it. It measures the play time and counts the errors automatically and reports them to the platform when the game ends. Its API:
+
+1. GameStats.start({ tracksErrors: true })   // or { tracksErrors: false }
+   - Call it at the exact moment the player presses the Start button, and again every time the player presses Play again (a new call resets the timer and the error counter).
+   - tracksErrors = true when the game is a quiz, a learning/educational game, or any game in which the player can give a wrong answer or make a wrong move.
+   - tracksErrors = false when a mistake is impossible by design (free drawing, pure exploration, ...).
+
+2. GameStats.mistake()
+   - Call it once for EVERY wrong answer / wrong move / wrong attempt, including repeated wrong attempts on the same question.
+   - Never call it for correct actions. Not needed when tracksErrors is false.
+
+3. var stats = GameStats.finish({ score: 7, total: 10, won: true })
+   - Call it exactly ONCE per play, at the moment the game ends (right when the final result screen is shown).
+   - score = final score or number of correct answers. total = maximum possible score or total number of questions/items. won = true or false, or null when the game has no win/lose concept. Use null for anything that is not meaningful.
+   - It returns { durationSec, errors }. durationSec = play time in seconds. errors = number of mistakes (null when tracksErrors is false).
+
+4. Show these on the final result screen: the play time formatted as minutes:seconds (built from stats.durationSec) and, ONLY when stats.errors is not null, the number of mistakes labelled "تعداد خطا".
+
+Do not measure time or send data yourself: no fetch, no XMLHttpRequest, no localStorage, no cookies, no postMessage. GameStats handles all of it.
+
 FORBIDDEN
 - Writing any <svg> ... </svg>
 - Using <img src="assets/icons/...">
@@ -456,6 +723,9 @@ FORBIDDEN
 - Using monotone icons when colored versions exist
 - Using any other CDN or external links (except the required Tailwind CDN)
 - Using external audio files
+- Defining, redefining, or replacing GameStats
+- Sending any data to a server yourself (fetch, XMLHttpRequest, localStorage, cookies)
+- Calling GameStats.finish() more than once per play
 - Broken or incomplete JavaScript
 - Syntax errors of any kind
 
@@ -474,6 +744,10 @@ You MUST mentally verify the entire code before returning it. Only output the fi
 10. Sound effects exist and are called correctly
 11. No <svg> tags exist
 12. The game is actually playable and fun
+13. A start screen with a Start button exists, and GameStats.start() is called when it (and Play again) is pressed
+14. GameStats.mistake() is called for every wrong action (when tracksErrors is true)
+15. GameStats.finish() is called exactly once when the game ends, and its time (and errors, if not null) are shown on the final screen
+16. GameStats is never defined or redefined in the code
 
 If anything is broken or incomplete, fix it completely before outputting. Never return half-working code.
 
@@ -576,7 +850,7 @@ function extractGameTitle(string $html, string $fallback): string
 // Saved games (games/*.html)
 // ---------------------------------------------------------------------
 
-function saveGame(string $gamesDir, string $gameId, string $html, string $userPrompt = '', string $modelUsed = ''): void
+function saveGame(string $gamesDir, string $gameId, string $html, string $userPrompt = '', string $modelUsed = '', string $creator = ''): void
 {
     if ($modelUsed !== '') {
         $safeModel = str_replace(['-->', '<!--'], ['', ''], $modelUsed);
@@ -586,6 +860,11 @@ function saveGame(string $gamesDir, string $gameId, string $html, string $userPr
     if ($userPrompt !== '') {
         $safePrompt = str_replace(['-->', '<!--'], ['', ''], $userPrompt);
         $html = "<!-- USER_PROMPT: " . $safePrompt . " -->\n" . $html;
+    }
+
+    $creator = sanitizeCreatorName($creator);
+    if ($creator !== '') {
+        $html = "<!-- CREATOR: " . $creator . " -->\n" . $html;
     }
 
     file_put_contents($gamesDir . '/' . $gameId . '.html', $html);
@@ -621,6 +900,24 @@ function getGameModel(string $gamesDir, string $gameId): ?string
 
     return null;
 }
+/** The CREATOR comment is always the very first thing in the file. */
+function extractCreatorFromHtml(string $html): ?string
+{
+    if (preg_match('/<!--\s*CREATOR:\s*(.+?)\s*-->/s', substr($html, 0, 512), $m)) {
+        return trim($m[1]);
+    }
+    return null;
+}
+
+function getGameCreator(string $gamesDir, string $gameId): ?string
+{
+    $file = $gamesDir . '/' . $gameId . '.html';
+    if (!file_exists($file)) {
+        return null;
+    }
+    return extractCreatorFromHtml(file_get_contents($file));
+}
+
 function loadGame(string $gamesDir, string $gameId): ?string
 {
     $file = $gamesDir . '/' . $gameId . '.html';
@@ -660,6 +957,7 @@ function listGames(string $gamesDir): array
         $games[] = [
             'id'         => $id,
             'title'      => extractGameTitle($html, $id),
+            'creator'    => extractCreatorFromHtml($html),
             'created_at' => filemtime($file),
         ];
     }
