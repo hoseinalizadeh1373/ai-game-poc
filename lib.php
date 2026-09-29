@@ -125,70 +125,363 @@ function applySvgPlaceholders(string $html, array $icons): array
     return [$result, array_values(array_unique($missing))];
 }
 
+/**
+ * The raw model output (before placeholder substitution) should NEVER
+ * contain a literal "<svg" tag if the model followed the rules — a
+ * compliant model only ever writes {{SVG:id}} placeholders, and real
+ * <svg> tags only appear after our own substitution runs. So any "<svg"
+ * found in the raw text is proof the model hand-drew an icon instead of
+ * reusing the library — a 100% reliable check, not a guess.
+ *
+ * @return int number of hand-drawn <svg> tags found in the raw output
+ */
+function countHandDrawnSvg(string $rawModelOutput): int
+{
+    return preg_match_all('/<svg\b/i', $rawModelOutput);
+}
+
+/**
+ * A successful applySvgPlaceholders() run consumes every {{SVG:id}} it
+ * finds — valid ones become real markup, invalid ids become an HTML
+ * comment. So after substitution, the literal text "{{SVG" should never
+ * remain anywhere in the output. If it does, something didn't match the
+ * expected static pattern at all — most commonly the model built the
+ * placeholder dynamically at runtime, e.g. `{{SVG:${item.id}}}`, which
+ * still contains the unresolved variable and can never be matched. This
+ * catches that whole bug class (and any future variant) without needing
+ * to know its exact shape in advance.
+ *
+ * @return int number of leftover, unresolved "{{SVG" fragments
+ */
+function countBrokenSvgPlaceholders(string $htmlAfterSubstitution): int
+{
+    return preg_match_all('/\{\{\s*SVG\b/i', $htmlAfterSubstitution);
+}
+
+// ---------------------------------------------------------------------
+// Shared base CSS/JS (assets/base.css, assets/base.js)
+//
+// Unlike icons (one file = one id), these are two single files with
+// several utilities each. To keep the same "just document it in a
+// comment and it's picked up automatically" philosophy, every reusable
+// class/function is announced with a "@class" / "@helper" comment right
+// above it — the manifest builder below extracts those comments with a
+// regex, so adding a new shared utility never requires touching lib.php.
+// ---------------------------------------------------------------------
+
+function loadBaseCss(string $assetsDir): string
+{
+    $file = $assetsDir . '/base.css';
+    return file_exists($file) ? trim(file_get_contents($file)) : '';
+}
+
+function loadBaseJs(string $assetsDir): string
+{
+    $file = $assetsDir . '/base.js';
+    return file_exists($file) ? trim(file_get_contents($file)) : '';
+}
+
+/**
+ * Extracts "/* @class .name — description *\/" lines from base.css and
+ * "// @helper name(args) — description" lines from base.js into one
+ * compact manifest for the prompt.
+ */
+function buildCssJsManifest(string $css, string $js): string
+{
+    $lines = [];
+
+    if (preg_match_all('/@class\s+(\S+)\s*—\s*(.+?)\*\//u', $css, $m, PREG_SET_ORDER)) {
+        foreach ($m as $match) {
+            $lines[] = '- ' . trim($match[1]) . ' (CSS class): ' . trim($match[2]);
+        }
+    }
+
+    if (preg_match_all('/@helper\s+([a-zA-Z0-9_]+\([^)]*\))\s*—\s*(.+)/u', $js, $m, PREG_SET_ORDER)) {
+        foreach ($m as $match) {
+            $lines[] = '- ' . trim($match[1]) . ' (JS function): ' . trim($match[2]);
+        }
+    }
+
+    return implode("\n", $lines);
+}
+
+/**
+ * Injects the shared CSS and JS into the very start of <head>, so they
+ * are defined before anything the AI wrote (wherever it placed its own
+ * <style>/<script>). This runs unconditionally — regardless of whether
+ * the AI actually used any of these classes/functions — so the final
+ * file is guaranteed consistent and still 100% self-contained (no
+ * external <link>/<script src>, everything inlined once, at save time).
+ */
+/**
+ * Injects the shared JS at the very START of <head> (so functions/vars
+ * are defined before anything the AI wrote runs), and the shared CSS at
+ * the very END of <head> (right before </head>).
+ *
+ * The CSS position matters: a weak model sometimes ignores the "do not
+ * redefine these classes" rule and declares its own .overlay/.btn/etc.
+ * with the same name. In CSS, when two rules target the same selector
+ * with equal specificity, whichever rule appears LAST in the document
+ * wins, property by property — so if our rule were injected first and
+ * the model's own (incomplete/conflicting) rule came later, the model's
+ * version would silently win on every property it happens to set, while
+ * our properties survive on anything the model's rule left out. That
+ * mismatch is exactly what produces invisible white-text-on-white
+ * overlays in practice (our .overlay sets color:#fff on a dark
+ * background; a model's later .overlay redefinition changes only the
+ * background to white, and our still-active white text disappears).
+ * Placing our CSS last in <head> instead makes our rules win the
+ * cascade automatically, with no !important needed.
+ *
+ * This runs unconditionally — regardless of whether the AI actually
+ * used any of these classes/functions — so the final file is guaranteed
+ * consistent and still 100% self-contained (no external <link>/<script
+ * src>, everything inlined once, at save time).
+ */
+function injectSharedAssets(string $html, string $css, string $js): string
+{
+    if ($js !== '') {
+        $jsBlock = "<script data-shared-assets>\n" . $js . "\n</script>\n";
+        if (preg_match('/<head[^>]*>/i', $html)) {
+            $html = preg_replace('/(<head[^>]*>)/i', '$1' . "\n" . $jsBlock, $html, 1);
+        } elseif (preg_match('/<html[^>]*>/i', $html)) {
+            $html = preg_replace('/(<html[^>]*>)/i', '$1' . "\n<head>" . $jsBlock . "</head>\n", $html, 1);
+        } else {
+            $html = $jsBlock . $html;
+        }
+    }
+
+    if ($css !== '') {
+        $cssBlock = "<style data-shared-assets>\n" . $css . "\n</style>\n";
+        if (preg_match('/<\/head>/i', $html)) {
+            $html = preg_replace('/(<\/head>)/i', $cssBlock . '$1', $html, 1);
+        } elseif (preg_match('/<head[^>]*>/i', $html)) {
+            // <head> opened but never closed (malformed) — best we can do
+            $html = preg_replace('/(<head[^>]*>)/i', '$1' . "\n" . $cssBlock, $html, 1);
+        } else {
+            $html = $cssBlock . $html;
+        }
+    }
+
+    return $html;
+}
+
+/**
+ * Detects a weak model redeclaring one of our shared CSS classes with
+ * its own conflicting rule instead of reusing it. Runs on the RAW model
+ * output, before injection, so it only flags rules the model itself
+ * wrote (not our own injected copy).
+ *
+ * @return string[] shared class names the model redeclared
+ */
+function detectSharedClassCollisions(string $rawModelOutput, string $baseCss): array
+{
+    $sharedClasses = [];
+    if (preg_match_all('/@class\s+(\.[a-zA-Z0-9_-]+)/', $baseCss, $m)) {
+        $sharedClasses = $m[1];
+    }
+
+    $collisions = [];
+    foreach ($sharedClasses as $class) {
+        $pattern = '/' . preg_quote($class, '/') . '\s*(,|\{)/';
+        if (preg_match($pattern, $rawModelOutput)) {
+            $collisions[] = $class;
+        }
+    }
+
+    return $collisions;
+}
+
+// ---------------------------------------------------------------------
+// Extracting the HTML document from the raw model response
+// ---------------------------------------------------------------------
+
+/**
+ * A weak/non-compliant model sometimes ignores the "output ONLY raw HTML,
+ * no explanations, no code fences" rule and wraps the document in prose
+ * and/or ```html fences. Simply trimming ``` from the very start/end of
+ * the string (the old approach) misses this whenever there's ANY text
+ * before the opening fence or after the closing one — that leftover
+ * prose then becomes literal, visible text on the saved game page
+ * (browsers relocate stray text before <html> into the visible body).
+ *
+ * This instead locates the first <!doctype html> (or <html>) tag and the
+ * LAST </html> tag anywhere in the response and keeps only what's
+ * between them — robust to prose or fences appearing anywhere around the
+ * document, not just at the very edges of the trimmed string.
+ *
+ * @return array{0:?string, 1:bool} [extracted HTML, or null if no document was found; whether extra text/fences were stripped]
+ */
+function extractHtmlDocument(string $raw): array
+{
+    $raw = trim($raw);
+
+    // Fence markers can legitimately appear anywhere (start, or wrapping
+    // the whole thing) — strip them first so the doctype/html search
+    // below isn't thrown off, and so they never end up inside the saved
+    // document.
+    $stripped = preg_replace('/```html/i', '', $raw);
+    $stripped = preg_replace('/```/', '', $stripped);
+
+    $startPos = null;
+    if (preg_match('/<!doctype\s+html/i', $stripped, $m, PREG_OFFSET_CAPTURE)) {
+        $startPos = $m[0][1];
+    } elseif (preg_match('/<html[\s>]/i', $stripped, $m, PREG_OFFSET_CAPTURE)) {
+        $startPos = $m[0][1];
+    }
+
+    if ($startPos === null) {
+        return [null, false];
+    }
+
+    $endPos = null;
+    if (preg_match_all('/<\/html\s*>/i', $stripped, $mAll, PREG_OFFSET_CAPTURE)) {
+        $last  = end($mAll[0]);
+        $endPos = $last[1] + strlen($last[0]);
+    }
+
+    $extracted = trim($endPos !== null
+        ? substr($stripped, $startPos, $endPos - $startPos)
+        : substr($stripped, $startPos));
+
+    $hadExtraText = trim($stripped) !== $extracted;
+
+    return [$extracted, $hadExtraText];
+}
+
 // ---------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------
 
-function buildSystemPrompt(string $svgManifest): string
+function buildSystemPrompt(string $svgManifest, string $cssJsManifest): string
 {
     $template = <<<'PROMPT'
-You are an expert HTML5 browser game developer for children's educational games.
+You are an expert HTML5 browser game developer specializing in children's educational games. You write clean, bug-free, production-quality code.
 
 TASK
-Generate one complete, self-contained, playable HTML5 game based on the user's request (given in the next message, along with a suggested item/question count if relevant).
+Generate one complete, self-contained, fully playable HTML5 game based on the user's request.
 
 OUTPUT FORMAT — STRICT
 - Output ONLY raw HTML, starting with <!DOCTYPE html> and ending with </html>.
-- No explanations, no markdown, no ``` fences, no text before or after the code.
-- Everything (CSS and JavaScript) must be inline in that one HTML file.
-- Include a short, clear <title>...</title> that names this specific game (in the same language as the user's request) — it is used as the game's display name, so make it good.
+- No explanations, no markdown, no code fences, no comments outside the HTML.
+- Include a meaningful <title> in Persian.
 
-TECHNICAL RULES
-- HTML5 + CSS3 + vanilla JavaScript only.
-- Do NOT use React, Vue, Phaser, jQuery, or any external library.
-- Do NOT link external files, external images, external fonts, or make any network request.
-- Canvas is allowed when it helps the game.
-- The game must be fully playable: real game logic, a score when relevant, and a clear win / lose / completion state.
-- Responsive layout (works on both desktop and mobile).
-- Visual style must be simple, colorful, and friendly for children.
+TECHNICAL STACK
+- HTML5 + Tailwind CSS (via CDN) + vanilla JavaScript only.
+- Allowed external resources ONLY:
+  1. Tailwind CSS CDN: <script src="https://cdn.tailwindcss.com"></script>
+  2. Local Iconify: <script src="assets/iconify-icon.min.js"></script>
+  3. Local Vazir font (via @font-face)
+- Fully playable game with real logic, score (when relevant), and clear win/lose/completion state.
+- The game language is Persian (RTL). Always set dir="rtl" and lang="fa" on the <html> tag.
 
-GRAPHICS RULE — IMPORTANT
-You do NOT draw most graphics yourself. A fixed set of ready-made icons already exists on the server. Whenever you need one of them, do not write <svg> code — write this exact placeholder text at that spot instead:
+TAILWIND CSS — REQUIRED
+1. Always include this exact script in <head> BEFORE any other scripts:
+<script src="https://cdn.tailwindcss.com"></script>
 
-{{SVG:ID}}
+2. Use Tailwind utility classes for ALL layout, spacing, colors, typography, and responsiveness.
+3. Prefer Tailwind over writing custom CSS. Only write minimal custom CSS when absolutely necessary (animations, complex keyframes).
+4. Mobile-first responsive design is mandatory:
+   - Base styles for mobile
+   - Use sm:, md:, lg: breakpoints for larger screens
+   - Game must look excellent on phones (320px+), tablets, and desktops
+5. Use flex, grid, gap, padding, rounded-*, shadow-*, and modern Tailwind patterns.
 
-"ID" must be exactly one of the ids below (lowercase, same spelling/hyphens, no changes). The server replaces each placeholder with the real icon before the game is shown, so the final game still works 100% offline.
+VISUAL DESIGN — MINIMAL & CHIC
+- Clean, modern, minimal aesthetic with generous whitespace.
+- Soft, friendly color palette suitable for children but elegant (not childish clutter).
+- Large touch targets (min 44px).
+- Rounded corners (rounded-xl, rounded-2xl).
+- Subtle shadows and soft transitions.
+- Clear visual hierarchy.
+- Avoid visual clutter. Every element must have purpose.
+- Center the main game area nicely on larger screens.
+- Use consistent spacing scale (p-4, p-6, gap-4, gap-6...).
 
-AVAILABLE ICON IDS
-___SVG_MANIFEST___
+FONT — REQUIRED
+Always include and use the local Vazir font.
 
-HOW TO USE THE PLACEHOLDER
-1. Use it like a small inline image, e.g.: <div class="apple-box">{{SVG:apple}}</div>
-2. Control its size with CSS on its parent element (width/height) — it scales automatically (viewBox-based).
-3. Control its color with CSS "color: ..." on its parent element — it uses currentColor.
-4. NEVER invent an id that is not in the list above.
-5. NEVER hand-write <svg>...</svg> markup for anything that already exists in the list above — always use the placeholder, to keep your output short.
-6. Do not request the same icon id under a different spelling — reuse the existing id exactly as listed; never create a near-duplicate.
-7. Only if the game truly needs a visual that is NOT in the list, you may draw one very small, simple custom SVG or CSS shape yourself. Keep it minimal.
-8. NEVER write the placeholder as a quoted JavaScript string, e.g. NEVER do `icons: ["{{SVG:cat}}", "{{SVG:dog}}"]`. The real icon markup contains double quotes and WILL break a JS string like that. Instead, either (a) put the placeholder directly as HTML content, e.g. `<div class="icon-slot" data-animal="cat">{{SVG:cat}}</div>`, and read/compare `data-animal` in JavaScript instead of the icon markup itself, or (b) if you truly need it in a JS array, wrap each entry in backticks, e.g. `icons: [\`{{SVG:cat}}\`, \`{{SVG:dog}}\`]`, never plain double or single quotes.
+Add this inside a <style> tag in the <head>:
 
-CODE SIZE RULES — IMPORTANT
-- Write compact code. No comments. No unnecessary blank lines or unused CSS/JS.
-- Reuse CSS classes instead of repeating inline styles.
-- If the game needs many icons of the same kind, write one small JavaScript function/array to render them, instead of repeating similar HTML blocks by hand.
-
-CORRECT EXAMPLE
-User asked: "a game where the child taps the apple among 3 fruits"
-Correct: <div class="fruit" data-correct="true">{{SVG:apple}}</div><div class="fruit">{{SVG:banana}}</div><div class="fruit">{{SVG:grape}}</div>
-Wrong (never do this): drawing a full custom <svg><path d="..."/></svg> for the apple yourself.
-
-FINAL REMINDER
-Return ONLY the final HTML document. Start directly with <!DOCTYPE html>. Nothing before it, nothing after it.
-PROMPT;
-
-    return str_replace('___SVG_MANIFEST___', $svgManifest, $template);
+@font-face {
+  font-family: 'Vazir';
+  src: url('assets/fonts/vazir.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
 }
 
+body {
+  font-family: 'Vazir', Tahoma, sans-serif !important;
+}
+
+ICON SYSTEM — ICONIFY (COLORED ICONS)
+You must use Iconify for every icon.
+
+1. Always include this exact script in the <head>:
+<script src="assets/iconify-icon.min.js"></script>
+
+2. Use icons with the web component:
+<iconify-icon icon="collection:icon-name" class="text-4xl"></iconify-icon>
+
+3. Strongly prefer colored icon sets:
+- twemoji
+- emojione
+- noto
+- fluent-emoji
+- openmoji
+- fluent-emoji-flat
+
+You are free to use any valid icon from these collections.
+
+SOUND EFFECTS — REQUIRED
+Every game must have simple and pleasant sound effects using the Web Audio API (no external audio files).
+
+Required sounds (at minimum):
+- Correct / Success sound
+- Wrong / Error sound
+- Click / Tap sound
+- Win / Level complete sound (when relevant)
+
+Rules:
+- Use Web Audio API only (AudioContext).
+- Keep sounds short and soft (suitable for children).
+- Do not use external .mp3 / .wav files or base64 audio.
+- Create a small reusable sound helper function.
+
+FORBIDDEN
+- Writing any <svg> ... </svg>
+- Using <img src="assets/icons/...">
+- Using {{SVG:...}} placeholders
+- Using monotone icons when colored versions exist
+- Using any other CDN or external links (except the required Tailwind CDN)
+- Using external audio files
+- Broken or incomplete JavaScript
+- Syntax errors of any kind
+
+CRITICAL — SELF-CHECK BEFORE OUTPUT (MANDATORY)
+You MUST mentally verify the entire code before returning it. Only output the final HTML if ALL of the following are true:
+
+1. JavaScript has zero syntax errors
+2. All event listeners are correctly attached and will fire
+3. Game logic is complete and works end-to-end (start → play → win/lose)
+4. No undefined variables or missing function references
+5. Tailwind script is present and all classes are valid
+6. Iconify script is present and every icon uses <iconify-icon>
+7. Vazir font is loaded and applied
+8. html has dir="rtl" and lang="fa"
+9. Layout is fully responsive (mobile + desktop)
+10. Sound effects exist and are called correctly
+11. No <svg> tags exist
+12. The game is actually playable and fun
+
+If anything is broken or incomplete, fix it completely before outputting. Never return half-working code.
+
+Return only the final HTML document.
+PROMPT;
+
+    return $template;
+}
 // ---------------------------------------------------------------------
 // API call
 // ---------------------------------------------------------------------
@@ -196,10 +489,14 @@ PROMPT;
 /**
  * @return array{ok:bool, text:?string, error:?string}
  */
-function callAiApi(array $config, string $systemPrompt, string $userMessage): array
+function callAiApi(array $config, string $systemPrompt, string $userMessage, ?string $modelOverride = null): array
 {
+
+    
+    $model = $modelOverride ?: ($config['model'] ?? 'gapgpt-qwen-3.6');
+
     $payload = [
-        'model' => $config['model'],
+        'model' => $model,
         'messages' => [
             ['role' => 'system', 'content' => $systemPrompt],
             ['role' => 'user', 'content' => $userMessage],
@@ -216,9 +513,6 @@ function callAiApi(array $config, string $systemPrompt, string $userMessage): ar
             'Authorization: Bearer ' . $config['api_key'],
         ],
         CURLOPT_POSTFIELDS => json_encode($payload),
-        // a single raw-HTML response is far smaller/faster to generate than
-        // the earlier JSON+Base64 shape, but a slow target model can still
-        // take a while — keep this generous.
         CURLOPT_TIMEOUT => 280,
         CURLOPT_CONNECTTIMEOUT => 20,
     ]);
@@ -282,15 +576,79 @@ function extractGameTitle(string $html, string $fallback): string
 // Saved games (games/*.html)
 // ---------------------------------------------------------------------
 
-function saveGame(string $gamesDir, string $gameId, string $html): void
+function saveGame(string $gamesDir, string $gameId, string $html, string $userPrompt = '', string $modelUsed = ''): void
 {
+    if ($modelUsed !== '') {
+        $safeModel = str_replace(['-->', '<!--'], ['', ''], $modelUsed);
+        $html = "<!-- MODEL_USED: " . $safeModel . " -->\n" . $html;
+    }
+
+    if ($userPrompt !== '') {
+        $safePrompt = str_replace(['-->', '<!--'], ['', ''], $userPrompt);
+        $html = "<!-- USER_PROMPT: " . $safePrompt . " -->\n" . $html;
+    }
+
     file_put_contents($gamesDir . '/' . $gameId . '.html', $html);
 }
+function getGamePrompt(string $gamesDir, string $gameId): ?string
+{
+    $file = $gamesDir . '/' . $gameId . '.html';
+    if (!file_exists($file)) {
+        return null;
+    }
 
+    $content = file_get_contents($file);
+
+    if (preg_match('/<!--\s*USER_PROMPT:\s*(.+?)\s*-->/s', $content, $m)) {
+        return trim($m[1]);
+    }
+
+    return null;
+}
+
+function getGameModel(string $gamesDir, string $gameId): ?string
+{
+    $file = $gamesDir . '/' . $gameId . '.html';
+    if (!file_exists($file)) {
+        return null;
+    }
+
+    $content = file_get_contents($file);
+
+    if (preg_match('/<!--\s*MODEL_USED:\s*(.+?)\s*-->/s', $content, $m)) {
+        return trim($m[1]);
+    }
+
+    return null;
+}
 function loadGame(string $gamesDir, string $gameId): ?string
 {
     $file = $gamesDir . '/' . $gameId . '.html';
     return file_exists($file) ? file_get_contents($file) : null;
+}
+
+/**
+ * Force every reference to the Vazir font asset onto the single correct
+ * RELATIVE path, regardless of what the model wrote (root-absolute
+ * '/assets/...', '../assets/...', etc.).
+ *
+ * Why this matters: the generated game is shown inside an <iframe
+ * srcdoc="...">, and a srcdoc document resolves relative URLs against the
+ * URL of the PARENT page (index.php), not against the domain root. So a
+ * relative path like 'assets/fonts/vazir.woff' works correctly, but a
+ * root-absolute path like '/assets/fonts/vazir.woff' only works if this
+ * whole app happens to be hosted at the domain root — in any subfolder
+ * deployment it 404s and the font silently falls back to Tahoma. A
+ * previous version of this function did the opposite (rewrote to an
+ * absolute path), which is exactly what caused that failure.
+ */
+function normalizeFontPath(string $html): string
+{
+    return preg_replace(
+        '/url\(\s*[\'"]?(?:https?:\/\/[^\'")]*)?(?:\.\.\/)*\/?assets\/fonts\/vazir\.woff[\'"]?\s*\)/i',
+        "url('assets/fonts/vazir.woff')",
+        $html
+    );
 }
 
 function listGames(string $gamesDir): array
@@ -309,4 +667,347 @@ function listGames(string $gamesDir): array
         return $b['created_at'] <=> $a['created_at'];
     });
     return $games;
+}
+
+// ---------------------------------------------------------------------
+// Generation lock (prevent concurrent AI requests)
+// ---------------------------------------------------------------------
+//
+// Only ONE generation is allowed at a time.
+// Method: atomic file creation with mode 'x' (fails if file already exists).
+// This works reliably on Windows, Linux, shared hosting, and PHP built-in server.
+//
+// - Lock file does not exist          → create it and proceed
+// - Lock file exists and is fresh     → reject with "server is busy"
+// - Lock file exists but is stale     → remove it and take over
+//
+// Always call releaseGenerationLock() when finished (use try/finally).
+
+define('GENERATION_LOCK_MAX_AGE', 300); // 5 minutes safety for crashed processes
+
+/**
+ * Tries to acquire the generation lock.
+ *
+ * @return array{ok:bool, error:?string}
+ */
+function acquireGenerationLock(string $lockFile): array
+{
+    $dir = dirname($lockFile);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+
+    // If a lock already exists, decide whether it is still valid
+    if (file_exists($lockFile)) {
+        $age = time() - (int) @filemtime($lockFile);
+
+        if ($age <= GENERATION_LOCK_MAX_AGE) {
+            // Fresh lock → another generation is running
+            return [
+                'ok'    => false,
+                'error' => 'الان سرور مشغول ساخت بازی دیگری است. لطفاً چند دقیقه دیگر دوباره تلاش کنید.',
+            ];
+        }
+
+        // Stale lock (process probably crashed) → remove it
+        @unlink($lockFile);
+    }
+
+    // Atomic create: mode 'x' fails if the file already exists
+    // This is the critical race-free step
+    $fp = @fopen($lockFile, 'x');
+    if ($fp === false) {
+        // Someone else just created the lock between our check and now
+        return [
+            'ok'    => false,
+            'error' => 'الان سرور مشغول ساخت بازی دیگری است. لطفاً چند دقیقه دیگر دوباره تلاش کنید.',
+        ];
+    }
+
+    // Write timestamp and close (we no longer need the handle)
+    fwrite($fp, (string) time());
+    fclose($fp);
+
+    return [
+        'ok'    => true,
+        'error' => null,
+    ];
+}
+
+/**
+ * Releases the generation lock.
+ * Always call this when the generation finishes (success or error).
+ */
+function releaseGenerationLock(string $lockFile): void
+{
+    if (file_exists($lockFile)) {
+        @unlink($lockFile);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Game refinement ("Edit / fix bugs" feature)
+//
+// Everything below is UI-agnostic: it only knows about game ids, files
+// and the AI API. The HTTP endpoint (refine.php) and the front-end
+// widget (assets/game-refine.js) are thin layers on top of refineGame().
+// ---------------------------------------------------------------------
+
+/**
+ * Models the app is allowed to call: [api model id => human label].
+ * Used by the refine endpoint. (index.php still keeps its own copy for
+ * the "create" form — it can be switched to this function later.)
+ */
+function allowedModels(): array
+{
+    return [
+        'deepseek-v4.1-flash' => 'DeepSeek v4.1 Flash',
+        'claude-fable-5'      => 'Claude Fable 5',
+        'claude-sonnet-5'     => 'Claude Sonnet 5',
+        'gpt-6-sol'           => 'GPT-6 Sol',
+    ];
+}
+
+/**
+ * Removes the "<!-- USER_PROMPT: ... -->" / "<!-- MODEL_USED: ... -->"
+ * header comments written by saveGame(): they are our own metadata and
+ * would only confuse the reviewing model.
+ */
+function stripGameMetaComments(string $html): string
+{
+    return preg_replace('/<!--\s*(?:USER_PROMPT|MODEL_USED):.*?-->\s*/s', '', $html);
+}
+
+/**
+ * Removes the shared JS/CSS blocks that injectSharedAssets() put into a
+ * saved game, so the AI only sees (and rewrites) the game's own code.
+ * They are re-injected after the AI answers.
+ *
+ * New games carry a data-shared-assets marker; games saved before the
+ * marker existed are matched by their exact content instead.
+ */
+function stripSharedAssets(string $html, string $css, string $js): string
+{
+    $html = preg_replace(
+        '/\s*<(script|style)\b[^>]*\bdata-shared-assets\b[^>]*>.*?<\/\1>\s*/is',
+        "\n",
+        $html
+    );
+
+    if ($js !== '') {
+        $html = str_replace("\n<script>\n" . $js . "\n</script>\n", "\n", $html);
+    }
+    if ($css !== '') {
+        $html = str_replace("<style>\n" . $css . "\n</style>\n", '', $html);
+    }
+
+    return $html;
+}
+
+/**
+ * Detects the classic lazy-model failure: answering with a placeholder
+ * such as "// ... rest of the code unchanged" instead of the full file.
+ * Saving such an answer would destroy the game.
+ */
+function looksAbbreviated(string $html): bool
+{
+    return (bool) preg_match(
+        '~(?:<!--|//|/\*)[^\n]{0,20}\b(?:rest of (?:the )?(?:code|game|script|file|html|css)|remains? (?:the same|unchanged)|unchanged|same as (?:before|above|original)|previous code)\b~i',
+        $html
+    );
+}
+
+function buildRefineSystemPrompt(string $cssJsManifest): string
+{
+    $template = <<<'PROMPT'
+You are a senior QA engineer and expert HTML5 game developer specializing in children's educational games (Persian, RTL). You are given an EXISTING game — one self-contained HTML document that was generated automatically by a weaker AI model and may contain hidden bugs — together with the original request it was built for.
+
+YOUR JOB
+Audit the game thoroughly and return a fully repaired and improved version of the SAME game. Keep its concept, theme, topic, target age and everything that already works. Fix what is broken; improve what is weak.
+
+HOW TO AUDIT
+Do not skim. Mentally EXECUTE the game from page load to the final win/lose/completion screen, then restart it and play it a second time. Read every line of JavaScript, every data array, every piece of markup and every CSS rule. Review ALL of the dimensions below.
+
+1. FUNCTIONALITY & JAVASCRIPT
+- Syntax errors, unbalanced braces/quotes/backticks, broken template strings, stray text outside tags.
+- Undefined variables/functions, typos in ids/classes, getElementById/querySelector calls that return null, wrong scope.
+- Script running before the DOM exists (missing DOMContentLoaded, or a script placed before the elements it queries).
+- Event listeners that are never attached, attached twice, lost after an innerHTML re-render, or inline handlers that reference missing functions.
+- Broken game flow: start -> play -> next question/level -> win/lose -> restart. Restart must fully reset ALL state (score, index, timers, lock flags, DOM).
+- Double-click/double-tap bugs, answers accepted after a round is locked, timers/intervals never cleared, off-by-one errors, endless loops, unreachable end screen.
+- Score / progress / lives counters that do not update or update wrongly.
+
+2. GAME DATA & CONTENT CORRECTNESS
+- Verify EVERY question/item/answer in the data one by one: is the marked correct answer really correct? Look for wrong facts, wrong spellings, wrong counts, wrong icon for the word.
+- Exactly one correct option per question; no two options that are both right; no duplicate options; distractors plausible but clearly wrong.
+- Content must match the original request (topic, age group, difficulty, number of items).
+- CORRECT-ANSWER POSITION: the correct option must NOT sit in the same slot every time (for example always the first of four options). Randomize the option order at render time and identify the correct option by its value/id — never by its original index. Also make sure the data itself does not systematically list the correct answer first.
+- Persian text quality: correct spelling, natural phrasing, consistent digits, proper half-space (ZWNJ).
+- Every <iconify-icon> name must be a real icon of the given set and must semantically match what it represents.
+
+3. LAYOUT & VISUAL DESIGN
+- Correct RTL behaviour (dir="rtl"): alignment, element order, progress bars, arrows/directional icons, mixed LTR/RTL text.
+- Responsive from 320px phones to desktop: no horizontal scroll, no overflow or cut-off content, no overlapping elements, sensible grid and text sizes.
+- Touch targets of at least 44px, good contrast, readable font sizes, clearly visible pressed / selected / correct / wrong states.
+- Overlays and modals: never invisible text (e.g. white on white), never blocking the game after being dismissed.
+- A consistent, minimal and chic look (spacing scale, rounded corners, soft shadows, cohesive palette). Nothing decorative without a purpose.
+- Resolve conflicts between Tailwind classes and custom CSS.
+
+4. STRUCTURE & CODE QUALITY
+- Clear separation: data (constants at the top) / state / rendering / event handling / helpers.
+- Remove dead code, duplicate functions and unused variables; use meaningful names; add short comments where helpful.
+- Keep ALL content in one easy-to-extend data structure.
+- Be robust: guard against null/empty data, wrap Audio code in try/catch, produce no console errors.
+
+5. UX & FEEDBACK
+- Clear instructions, immediate feedback for correct and wrong answers, an encouraging (never harsh) tone for children.
+- Sound effects work through the Web Audio API and are started only after a user gesture.
+- A clear end screen with the result and a working "play again" button.
+
+6. RULES COMPLIANCE
+- The game must still satisfy every rule in the ORIGINAL GENERATION RULES at the end of this message (stack, allowed external resources, font, RTL, icons, sounds, forbidden items).
+
+HOW TO FIX
+- Fix every problem you find — do not just report it. If a part is fundamentally broken, rewrite that part properly.
+- Preserve everything that already works: same concept, same visual identity, same content unless it is incorrect. Never shrink the game, remove features, or replace content with placeholders.
+- If a human reviewer left notes, treat them as top-priority bugs: reproduce each one mentally and fix it, in addition to your own audit.
+- The helpers and CSS classes listed below are injected automatically into the final file after your answer, so they exist at runtime and you may use them without defining them. If the game already has its own equivalent function, keep the game's own version.
+
+AUTO-INJECTED SHARED HELPERS
+[[HELPERS]]
+
+FINAL SELF-CHECK (MANDATORY)
+Before answering, re-read your corrected code once more as a compiler and as a player. Only output it when: there are zero syntax errors, every listener fires, the whole flow works twice in a row, all data is verified, and the layout holds at 320px and at 1280px wide.
+
+OUTPUT FORMAT — STRICT
+- Output ONLY the complete corrected HTML document, from <!DOCTYPE html> to </html>.
+- Never abbreviate: no "rest of the code unchanged", no "...", no placeholders — the FULL file, every time.
+- No explanations, no markdown, no code fences, no text outside the HTML.
+- If you find the game already flawless, still return the complete document.
+
+=====================================================================
+ORIGINAL GENERATION RULES (the rules the game was built under — they still apply)
+=====================================================================
+PROMPT;
+
+    $helpers = $cssJsManifest !== '' ? $cssJsManifest : '(none)';
+
+    return str_replace('[[HELPERS]]', $helpers, $template)
+        . "\n\n" . buildSystemPrompt('', '');
+}
+
+function buildRefineUserMessage(string $gameHtml, string $originalPrompt, string $note): string
+{
+    $msg = '';
+
+    if ($originalPrompt !== '') {
+        $msg .= "ORIGINAL USER REQUEST (what this game was supposed to be):\n\"" . $originalPrompt . "\"\n\n";
+    }
+
+    $note = trim($note);
+    if ($note !== '') {
+        $msg .= "REVIEWER NOTES (known problems reported by a human — fix these first):\n" . $note . "\n\n";
+    }
+
+    $msg .= "Audit and fix the following game. Return the complete corrected HTML document only.\n\n"
+        . "<game_html>\n" . $gameHtml . "\n</game_html>";
+
+    return $msg;
+}
+
+/**
+ * Sends a saved game to the AI for a full review + bug-fix pass and
+ * saves the result — either as a NEW game (default, original untouched)
+ * or over the same id ($replace = true; the previous version is copied
+ * to games/.history/ first).
+ *
+ * The original game is never modified unless the AI returned a complete,
+ * plausible document.
+ *
+ * @return array{ok:bool, error:?string, gameId:?string, replaced:bool, hadExtraText:bool}
+ */
+function refineGame(
+    array $config,
+    string $assetsDir,
+    string $gamesDir,
+    string $gameId,
+    ?string $model = null,
+    string $note = '',
+    bool $replace = false
+): array {
+    $fail = function (string $msg): array {
+        return ['ok' => false, 'error' => $msg, 'gameId' => null, 'replaced' => false, 'hadExtraText' => false];
+    };
+
+    if (!preg_match('/^[A-Za-z0-9_\-]+$/', $gameId)) {
+        return $fail('شناسه بازی نامعتبر است.');
+    }
+
+    $original = loadGame($gamesDir, $gameId);
+    if ($original === null) {
+        return $fail('بازی مورد نظر پیدا نشد.');
+    }
+
+    if ($model === null || !isset(allowedModels()[$model])) {
+        $model = $config['model'] ?? 'deepseek-v4.1-flash';
+    }
+
+    $userPrompt = getGamePrompt($gamesDir, $gameId) ?? '';
+    $prevModel  = getGameModel($gamesDir, $gameId) ?? '';
+
+    $baseCss = loadBaseCss($assetsDir);
+    $baseJs  = loadBaseJs($assetsDir);
+
+    // what the AI sees: only the game's own code
+    $clean = stripSharedAssets(stripGameMetaComments($original), $baseCss, $baseJs);
+
+    $apiResult = callAiApi(
+        $config,
+        buildRefineSystemPrompt(buildCssJsManifest($baseCss, $baseJs)),
+        buildRefineUserMessage($clean, $userPrompt, $note),
+        $model
+    );
+    if (!$apiResult['ok']) {
+        return $fail($apiResult['error']);
+    }
+
+    [$text, $hadExtraText] = extractHtmlDocument(trim($apiResult['text']));
+
+    if ($text === null) {
+        return $fail('AI بازی ویرایش‌شده را به صورت HTML معتبر برنگرداند. بازی اصلی دست‌نخورده ماند.');
+    }
+    if (!preg_match('/<\/html\s*>/i', $text)) {
+        return $fail('پاسخ AI ناقص بود (احتمالاً وسط کار قطع شده). بازی اصلی دست‌نخورده ماند.');
+    }
+    if (strlen($text) < strlen($clean) * 0.4 || looksAbbreviated($text)) {
+        return $fail('AI به‌جای بازی کامل، نسخهٔ خلاصه‌شده برگرداند. بازی اصلی دست‌نخورده ماند؛ دوباره تلاش کنید یا مدل قوی‌تری انتخاب کنید.');
+    }
+
+    // same post-processing pipeline as a freshly created game
+    [$text] = applySvgPlaceholders($text, scanIconAssets($assetsDir . '/icons'));
+    $text   = normalizeFontPath($text);
+    $text   = injectSharedAssets($text, $baseCss, $baseJs);
+
+    if ($replace) {
+        $historyDir = $gamesDir . '/.history';
+        ensureDir($historyDir);
+        $backup = $historyDir . '/' . $gameId . '_' . date('Ymd_His') . '.html';
+        if (!@copy($gamesDir . '/' . $gameId . '.html', $backup)) {
+            return $fail('پشتیبان‌گیری از نسخهٔ قبلی ناموفق بود؛ بازی جایگزین نشد.');
+        }
+        $newId = $gameId;
+    } else {
+        $newId = newGameId();
+    }
+
+    $modelUsed = $prevModel !== '' ? $prevModel . ' → ' . $model : $model;
+    saveGame($gamesDir, $newId, $text, $userPrompt, $modelUsed);
+
+    return [
+        'ok'           => true,
+        'error'        => null,
+        'gameId'       => $newId,
+        'replaced'     => $replace,
+        'hadExtraText' => $hadExtraText,
+    ];
 }

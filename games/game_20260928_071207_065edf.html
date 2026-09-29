@@ -1,0 +1,558 @@
+<!-- USER_PROMPT: بازی تکمیل کلمات حیوانات کودکان 7 ساله -->
+<!-- MODEL_USED: deepseek-v4.1-flash -->
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<script>
+// Shared helper functions auto-injected into every generated game.
+// Each documented function below is announced to the target AI in the
+// prompt via the "@helper" comment convention — add a new helper here
+// with the same comment style and it appears automatically next time.
+
+// @helper shuffleArray(arr) — returns a NEW shuffled copy of the array, does not mutate the original
+function shuffleArray(arr){const a=arr.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+
+// @helper pickRandom(arr) — returns one random item from the array
+function pickRandom(arr){return arr[Math.floor(Math.random()*arr.length)];}
+
+// @helper playTone(kind) — plays a short offline beep; kind is "correct" or "wrong", no audio files needed
+function playTone(kind){try{const ctx=new (window.AudioContext||window.webkitAudioContext)();const o=ctx.createOscillator();const g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.value=kind==='correct'?880:220;o.type='sine';g.gain.setValueAtTime(.2,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.3);o.start();o.stop(ctx.currentTime+.3);}catch(e){}}
+
+// @helper launchConfetti(count) — spawns a short colorful confetti burst across the screen (pairs with the .confetti-piece CSS class)
+function launchConfetti(count){count=count||30;const colors=['#f87171','#fbbf24','#34d399','#60a5fa','#a78bfa'];for(let i=0;i<count;i++){const el=document.createElement('div');el.className='confetti-piece';el.style.left=Math.random()*100+'vw';el.style.background=colors[i%colors.length];el.style.animationDuration=(2+Math.random()*1.5)+'s';document.body.appendChild(el);setTimeout(()=>el.remove(),4000);}}
+
+// @helper vibrateDevice(ms) — safely triggers device vibration feedback if supported, does nothing otherwise
+function vibrateDevice(ms){if(navigator.vibrate)navigator.vibrate(ms||100);}
+</script>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>بازی تکمیل کلمات حیوانات</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="assets/iconify-icon.min.js"></script>
+<style>
+  @font-face {
+    font-family: 'Vazir';
+    src: url('assets/fonts/vazir.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  body {
+    font-family: 'Vazir', Tahoma, sans-serif !important;
+  }
+
+  @keyframes floaty {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+  .animate-float {
+    animation: floaty 2.6s ease-in-out infinite;
+  }
+
+  @keyframes popIn {
+    0% { transform: scale(0.6); opacity: 0.4; }
+    60% { transform: scale(1.15); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  .animate-pop {
+    animation: popIn 0.4s ease-out;
+  }
+
+  @keyframes shakeX {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-7px); }
+    40% { transform: translateX(7px); }
+    60% { transform: translateX(-5px); }
+    80% { transform: translateX(5px); }
+  }
+  .animate-shake {
+    animation: shakeX 0.4s ease-in-out;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .animate-fadeUp {
+    animation: fadeUp 0.45s ease-out;
+  }
+
+  @keyframes overlayIn {
+    from { opacity: 0; transform: scale(0.92); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .animate-overlay {
+    animation: overlayIn 0.35s ease-out;
+  }
+</style>
+<style>
+/* Shared base styles auto-injected into every generated game.
+   Each documented block below is announced to the target AI in the
+   prompt via the "@class" comment convention — add a new utility here
+   with the same comment style and it appears automatically next time. */
+
+*{box-sizing:border-box}
+
+/* @font-face Vazir — guaranteed-correct local font source, injected after the
+   AI's own <style> so it always wins the cascade regardless of whether (or
+   how correctly) the model declared its own @font-face. */
+@font-face{font-family:'Vazir';src:url('assets/fonts/vazir.woff') format('woff');font-weight:normal;font-style:normal;font-display:swap}
+body{margin:0;font-family:'Vazir',Tahoma,Arial,sans-serif!important;-webkit-tap-highlight-color:transparent}
+
+/* @class .btn — a large, colorful, rounded, finger-friendly button for any clickable action */
+.btn{display:inline-block;padding:14px 28px;border:0;border-radius:14px;background:#6366f1;color:#fff;font-size:18px;font-weight:bold;cursor:pointer;user-select:none;transition:transform .1s}
+.btn:active{transform:scale(.95)}
+
+/* @class .card — a rounded, shadowed content box (e.g. one quiz option or one puzzle piece slot) */
+.card{border-radius:16px;background:#fff;box-shadow:0 4px 14px rgba(0,0,0,.15);padding:14px;cursor:pointer;transition:transform .15s}
+.card:hover{transform:translateY(-4px)}
+
+/* @class .overlay — a full-screen centered layer for win/lose/level-complete messages */
+.overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:rgba(0,0,0,.55);color:#fff;text-align:center;padding:20px;z-index:50}
+.overlay.hidden{display:none}
+
+/* @class .correct-flash — apply briefly to an element to show a correct-answer pulse */
+.correct-flash{animation:aiGamePop .5s ease}
+/* @class .wrong-flash — apply briefly to an element to show a wrong-answer shake */
+.wrong-flash{animation:aiGameShake .4s ease}
+
+@keyframes aiGamePop{0%{transform:scale(1)}40%{transform:scale(1.15)}100%{transform:scale(1)}}
+@keyframes aiGameShake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+
+/* @class .confetti-piece — one falling square, spawned by the launchConfetti() JS helper */
+.confetti-piece{position:fixed;top:-10px;width:10px;height:10px;border-radius:2px;pointer-events:none;animation:aiGameFall linear forwards}
+@keyframes aiGameFall{to{transform:translateY(110vh) rotate(360deg);opacity:.2}}
+</style>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-sky-50 via-white to-emerald-50 text-slate-700">
+
+  <div class="max-w-3xl mx-auto px-4 py-5 sm:py-8">
+
+    <header class="flex items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <iconify-icon icon="twemoji:paw-prints" class="text-3xl sm:text-4xl"></iconify-icon>
+        <h1 class="text-base sm:text-2xl font-bold text-slate-700">کلمه‌های حیوانات</h1>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <button id="soundBtn" type="button" aria-label="صدا"
+          class="w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center rounded-2xl bg-white border border-slate-200 shadow-sm hover:bg-sky-50 active:scale-95 transition-all">
+          <iconify-icon id="soundIcon" icon="twemoji:speaker-high-volume" class="text-2xl"></iconify-icon>
+        </button>
+
+        <div class="flex items-center gap-1.5 h-11 sm:h-12 px-3 sm:px-4 rounded-2xl bg-amber-50 border border-amber-200 shadow-sm">
+          <iconify-icon icon="twemoji:star" class="text-xl sm:text-2xl"></iconify-icon>
+          <span id="scoreVal" class="font-bold text-amber-600 text-base sm:text-lg">۰</span>
+        </div>
+      </div>
+    </header>
+
+    <div id="progress" class="flex items-center justify-center gap-1.5 mt-5 mb-4"></div>
+
+    <main class="bg-white rounded-3xl shadow-xl shadow-sky-100/70 border border-slate-100 p-5 sm:p-8">
+      <div class="flex flex-col items-center gap-4 sm:gap-6">
+
+        <div id="animal" class="animate-float leading-none"></div>
+
+        <h2 class="text-sm sm:text-base font-medium text-slate-400">حرفِ گمشده را پیدا کن</h2>
+
+        <div id="wordRow" class="flex items-center justify-center gap-2 sm:gap-3"></div>
+
+        <div id="options" class="w-full grid grid-cols-4 gap-2 sm:gap-4 mt-1"></div>
+
+        <div id="feedback" class="h-10 flex items-center justify-center gap-2 text-base sm:text-lg font-bold"></div>
+
+      </div>
+    </main>
+
+    <p class="text-center text-xs sm:text-sm text-slate-400 mt-5">
+      روی حرف درست ضربه بزن تا کلمه کامل شود
+    </p>
+
+  </div>
+
+  <div id="overlay" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm items-center justify-center p-4">
+    <div class="animate-overlay bg-white rounded-3xl p-6 sm:p-9 w-full max-w-sm text-center shadow-2xl border border-slate-100">
+      <div id="winIcon" class="flex items-center justify-center"></div>
+      <h3 class="text-xl sm:text-2xl font-bold text-slate-800 mt-3">آفرین! همه کلمه‌ها کامل شد</h3>
+
+      <div id="stars" class="flex items-center justify-center gap-2 mt-4"></div>
+
+      <p class="text-slate-400 text-sm mt-4">امتیاز تو</p>
+      <p class="mt-1">
+        <span id="finalScore" class="text-4xl font-bold text-amber-500">۰</span>
+        <span class="text-sm text-slate-400">از ۴۰</span>
+      </p>
+
+      <button id="restartBtn" type="button"
+        class="mt-6 w-full h-14 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white text-lg font-bold shadow-lg shadow-emerald-200 active:scale-95 transition-all">
+        یک بار دیگر بازی کن
+      </button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------------------------------------------------------
+     صدا (Web Audio API)
+  --------------------------------------------------------- */
+  var audioCtx = null;
+
+  function getCtx() {
+    if (!audioCtx) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      audioCtx = new AC();
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    return audioCtx;
+  }
+
+  function tone(freq, startAt, duration, type, volume) {
+    var ctx = getCtx();
+    if (!ctx) return;
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.value = freq;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    var t = ctx.currentTime + startAt;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(volume || 0.14, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+
+    osc.start(t);
+    osc.stop(t + duration + 0.06);
+  }
+
+  var sfx = {
+    click: function () {
+      tone(680, 0, 0.07, 'triangle', 0.10);
+    },
+    correct: function () {
+      tone(523.25, 0, 0.20, 'sine', 0.14);
+      tone(659.25, 0.09, 0.20, 'sine', 0.14);
+      tone(783.99, 0.18, 0.28, 'sine', 0.14);
+    },
+    wrong: function () {
+      tone(233.08, 0, 0.16, 'sawtooth', 0.07);
+      tone(174.61, 0.14, 0.22, 'sawtooth', 0.07);
+    },
+    win: function () {
+      var notes = [523.25, 659.25, 783.99, 1046.50, 1318.51];
+      for (var i = 0; i < notes.length; i++) {
+        tone(notes[i], i * 0.11, 0.32, 'sine', 0.13);
+      }
+    }
+  };
+
+  var soundEnabled = true;
+  function playSfx(name) {
+    if (!soundEnabled) return;
+    try {
+      if (sfx[name]) sfx[name]();
+    } catch (e) { /* بی‌صدا */ }
+  }
+
+  /* ---------------------------------------------------------
+     داده‌های بازی
+  --------------------------------------------------------- */
+  var DATA = [
+    { word: 'گربه',  blank: 1, icon: 'twemoji:cat-face',    options: ['ر', 'ز', 'د', 'ل'] },
+    { word: 'شیر',   blank: 1, icon: 'twemoji:lion',        options: ['ی', 'ب', 'ن', 'ت'] },
+    { word: 'خرگوش', blank: 2, icon: 'twemoji:rabbit-face', options: ['گ', 'ک', 'ج', 'چ'] },
+    { word: 'ماهی',  blank: 2, icon: 'twemoji:fish',        options: ['ه', 'ی', 'ا', 'ن'] }
+  ];
+
+  var MAX_SCORE = DATA.length * 10;
+
+  /* ---------------------------------------------------------
+     ابزارها
+  --------------------------------------------------------- */
+  var FA_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+
+  function toFa(value) {
+    return String(value).replace(/\d/g, function (d) { return FA_DIGITS[Number(d)]; });
+  }
+
+  function makeIcon(name, classes) {
+    var el = document.createElement('iconify-icon');
+    el.setAttribute('icon', name);
+    el.className = classes || '';
+    return el;
+  }
+
+  function shuffle(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  }
+
+  /* ---------------------------------------------------------
+     عناصر
+  --------------------------------------------------------- */
+  var els = {
+    animal: document.getElementById('animal'),
+    wordRow: document.getElementById('wordRow'),
+    options: document.getElementById('options'),
+    feedback: document.getElementById('feedback'),
+    progress: document.getElementById('progress'),
+    scoreVal: document.getElementById('scoreVal'),
+    overlay: document.getElementById('overlay'),
+    winIcon: document.getElementById('winIcon'),
+    stars: document.getElementById('stars'),
+    finalScore: document.getElementById('finalScore'),
+    restartBtn: document.getElementById('restartBtn'),
+    soundBtn: document.getElementById('soundBtn'),
+    soundIcon: document.getElementById('soundIcon')
+  };
+
+  /* ---------------------------------------------------------
+     وضعیت بازی
+  --------------------------------------------------------- */
+  var step = 0;
+  var score = 0;
+  var mistakesThisRound = 0;
+  var locked = false;
+  var advanceTimer = null;
+
+  var TILE_BASE = 'w-11 h-14 sm:w-16 sm:h-20 flex items-center justify-center text-3xl sm:text-5xl font-bold rounded-2xl border-2 select-none ';
+  var TILE_NORMAL = TILE_BASE + 'bg-sky-50 border-sky-100 text-slate-700';
+  var TILE_BLANK = TILE_BASE + 'bg-amber-50 border-dashed border-amber-400 text-amber-400';
+  var TILE_FILLED = TILE_BASE + 'bg-emerald-50 border-emerald-400 text-emerald-600';
+  var OPTION_BASE = 'h-16 sm:h-20 rounded-2xl bg-white border-2 border-slate-200 text-3xl sm:text-4xl font-bold text-slate-700 shadow-sm hover:border-sky-300 hover:bg-sky-50 active:scale-95 transition-all duration-150 disabled:cursor-default';
+
+  function updateScore() {
+    els.scoreVal.textContent = toFa(score);
+  }
+
+  function updateProgress() {
+    els.progress.innerHTML = '';
+    for (var i = 0; i < DATA.length; i++) {
+      var dot = document.createElement('div');
+      var cls = 'h-2.5 rounded-full transition-all duration-300 ';
+      if (i < step) {
+        cls += 'w-6 bg-emerald-400';
+      } else if (i === step) {
+        cls += 'w-8 bg-sky-400';
+      } else {
+        cls += 'w-2.5 bg-slate-200';
+      }
+      dot.className = cls;
+      els.progress.appendChild(dot);
+    }
+  }
+
+  function setFeedback(message, type, iconName) {
+    els.feedback.innerHTML = '';
+    if (!message) {
+      els.feedback.className = 'h-10';
+      return;
+    }
+    var color = type === 'ok' ? 'text-emerald-600' : 'text-rose-500';
+    els.feedback.className = 'h-10 flex items-center justify-center gap-2 text-base sm:text-lg font-bold ' + color;
+    if (iconName) {
+      els.feedback.appendChild(makeIcon(iconName, 'text-2xl sm:text-3xl'));
+    }
+    var span = document.createElement('span');
+    span.textContent = message;
+    els.feedback.appendChild(span);
+  }
+
+  /* ---------------------------------------------------------
+     رندر مرحله
+  --------------------------------------------------------- */
+  function renderRound() {
+    var q = DATA[step];
+    locked = false;
+    mistakesThisRound = 0;
+
+    setFeedback('', null, null);
+
+    /* تصویر حیوان */
+    els.animal.innerHTML = '';
+    els.animal.appendChild(makeIcon(q.icon, 'text-7xl sm:text-8xl'));
+
+    /* کلمه با جای خالی */
+    els.wordRow.innerHTML = '';
+    var letters = q.word.split('');
+    for (var i = 0; i < letters.length; i++) {
+      var tile = document.createElement('div');
+      if (i === q.blank) {
+        tile.id = 'blankTile';
+        tile.className = TILE_BLANK;
+        tile.textContent = '؟';
+      } else {
+        tile.className = TILE_NORMAL;
+        tile.textContent = letters[i];
+      }
+      els.wordRow.appendChild(tile);
+    }
+
+    /* گزینه‌ها */
+    els.options.innerHTML = '';
+    var opts = shuffle(q.options);
+    for (var k = 0; k < opts.length; k++) {
+      (function (letter) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = OPTION_BASE;
+        btn.textContent = letter;
+        btn.setAttribute('aria-label', 'حرف ' + letter);
+        btn.addEventListener('click', function () {
+          choose(letter, btn);
+        });
+        els.options.appendChild(btn);
+      })(opts[k]);
+    }
+
+    updateProgress();
+  }
+
+  /* ---------------------------------------------------------
+     انتخاب حرف
+  --------------------------------------------------------- */
+  function choose(letter, btn) {
+    if (locked) return;
+
+    var q = DATA[step];
+    var answer = q.word.charAt(q.blank);
+
+    if (letter === answer) {
+      locked = true;
+      playSfx('correct');
+
+      btn.className = OPTION_BASE + ' !bg-emerald-500 !border-emerald-500 !text-white animate-pop';
+
+      var children = els.options.children;
+      for (var i = 0; i < children.length; i++) {
+        children[i].disabled = true;
+        if (children[i] !== btn) {
+          children[i].classList.add('opacity-40');
+        }
+      }
+
+      var blankTile = document.getElementById('blankTile');
+      if (blankTile) {
+        blankTile.textContent = letter;
+        blankTile.className = TILE_FILLED + ' animate-pop';
+      }
+
+      score += (mistakesThisRound === 0) ? 10 : 5;
+      updateScore();
+
+      setFeedback('آفرین! درست بود', 'ok', 'twemoji:party-popper');
+
+      if (advanceTimer) clearTimeout(advanceTimer);
+      advanceTimer = setTimeout(nextRound, 1500);
+
+    } else {
+      mistakesThisRound++;
+      playSfx('wrong');
+
+      btn.disabled = true;
+      btn.classList.add('animate-shake', '!bg-rose-50', '!border-rose-300', '!text-rose-400');
+
+      setFeedback('اِه! یک بار دیگر امتحان کن', 'bad', 'twemoji:thinking-face');
+
+      setTimeout(function () {
+        btn.classList.remove('animate-shake');
+      }, 420);
+    }
+  }
+
+  /* ---------------------------------------------------------
+     مرحله بعد / پایان
+  --------------------------------------------------------- */
+  function nextRound() {
+    step++;
+    if (step >= DATA.length) {
+      showWin();
+    } else {
+      renderRound();
+    }
+  }
+
+  function showWin() {
+    playSfx('win');
+
+    els.finalScore.textContent = toFa(score);
+
+    els.winIcon.innerHTML = '';
+    els.winIcon.appendChild(makeIcon('twemoji:trophy', 'text-6xl sm:text-7xl'));
+
+    var stars = 1;
+    if (score >= 35) stars = 3;
+    else if (score >= 25) stars = 2;
+
+    els.stars.innerHTML = '';
+    for (var i = 0; i < 3; i++) {
+      var star = makeIcon('twemoji:star', 'text-3xl sm:text-4xl');
+      if (i >= stars) star.classList.add('opacity-25');
+      els.stars.appendChild(star);
+    }
+
+    els.scoreVal.textContent = toFa(score);
+
+    els.overlay.classList.remove('hidden');
+    els.overlay.classList.add('flex');
+  }
+
+  /* ---------------------------------------------------------
+     شروع دوباره
+  --------------------------------------------------------- */
+  function restartGame() {
+    if (advanceTimer) clearTimeout(advanceTimer);
+    step = 0;
+    score = 0;
+    mistakesThisRound = 0;
+    locked = false;
+
+    els.overlay.classList.add('hidden');
+    els.overlay.classList.remove('flex');
+
+    updateScore();
+    renderRound();
+  }
+
+  /* ---------------------------------------------------------
+     رویدادها
+  --------------------------------------------------------- */
+  els.restartBtn.addEventListener('click', function () {
+    playSfx('click');
+    restartGame();
+  });
+
+  els.soundBtn.addEventListener('click', function () {
+    soundEnabled = !soundEnabled;
+    els.soundIcon.setAttribute('icon', soundEnabled ? 'twemoji:speaker-high-volume' : 'twemoji:muted-speaker');
+    if (soundEnabled) playSfx('click');
+  });
+
+  document.addEventListener('click', function () {
+    getCtx();
+  }, { once: true });
+
+  /* ---------------------------------------------------------
+     اجرا
+  --------------------------------------------------------- */
+  updateScore();
+  renderRound();
+
+})();
+</script>
+</body>
+</html>
