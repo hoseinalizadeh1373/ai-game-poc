@@ -222,15 +222,21 @@ $games = listGames($gamesDir);
             <?php else: ?>
                 <div class="games-grid">
                     <?php foreach ($games as $g): ?>
-                        <a class="game-card" href="play.php?id=<?= urlencode($g['id']) ?>">
-                            <div class="title"><?= htmlspecialchars($g['title']) ?></div>
-                            <div class="meta">
-                                <?= htmlspecialchars(date('Y-m-d H:i', $g['created_at'])) ?>
-                                <?php if (!empty($g['creator'])): ?>
-                                    · <?= htmlspecialchars($g['creator']) ?>
-                                <?php endif; ?>
+                        <div class="game-card" style="padding:0;overflow:hidden;">
+                            <a href="play.php?id=<?= urlencode($g['id']) ?>" style="display:block;padding:18px 18px 10px;text-decoration:none;color:inherit;">
+                                <div class="title"><?= htmlspecialchars($g['title']) ?></div>
+                                <div class="meta">
+                                    <?= htmlspecialchars(date('Y-m-d H:i', $g['created_at'])) ?>
+                                    <?php if (!empty($g['creator'])): ?>
+                                        · <?= htmlspecialchars($g['creator']) ?>
+                                    <?php endif; ?>
+                                </div>
+                            </a>
+                            <div style="display:flex;gap:8px;padding:0 18px 14px;flex-wrap:wrap;">
+                                <a href="play.php?id=<?= urlencode($g['id']) ?>" style="font-size:0.8rem;color:#a5b4fc;text-decoration:none;">▶ تک‌نفره</a>
+                                <a href="multiplayer.php?game=<?= urlencode($g['id']) ?>" style="font-size:0.8rem;color:#c4b5fd;text-decoration:none;">🌐 چندنفره</a>
                             </div>
-                        </a>
+                        </div>
                     <?php endforeach; ?>
                 </div>
             <?php endif; ?>

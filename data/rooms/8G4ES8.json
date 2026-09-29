@@ -1,0 +1,25 @@
+{
+    "code": "8G4ES8",
+    "game_id": "game_20260928_071207_065edf",
+    "host_id": "p_4f6592adf75299d0",
+    "players": [
+        {
+            "id": "p_4f6592adf75299d0",
+            "name": "y",
+            "role": "host",
+            "ready": true,
+            "joined": 1790671764
+        },
+        {
+            "id": "p_c9557f0314436080",
+            "name": "مهمان",
+            "role": "guest",
+            "ready": true,
+            "joined": 1790671779
+        }
+    ],
+    "status": "playing",
+    "created_at": 1790671764,
+    "updated_at": 1790671785,
+    "seed": "7b204218fad4724c"
+}

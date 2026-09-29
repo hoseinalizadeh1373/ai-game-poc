@@ -1,0 +1,25 @@
+{
+    "code": "7YNTL7",
+    "game_id": "game_20260928_071207_065edf",
+    "host_id": "p_9222ef4d712656f7",
+    "players": [
+        {
+            "id": "p_9222ef4d712656f7",
+            "name": "fd",
+            "role": "host",
+            "ready": true,
+            "joined": 1790673427
+        },
+        {
+            "id": "p_4f6592adf75299d0",
+            "name": "df",
+            "role": "guest",
+            "ready": true,
+            "joined": 1790673440
+        }
+    ],
+    "status": "playing",
+    "created_at": 1790673427,
+    "updated_at": 1790673442,
+    "seed": "66fe2f78df3782ee"
+}

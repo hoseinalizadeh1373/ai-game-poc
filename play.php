@@ -1,6 +1,7 @@
 <?php
 
 require __DIR__ . '/lib.php';
+require __DIR__ . '/lib_mp.php';
 
 $config = require __DIR__ . '/config.php';
 
@@ -14,6 +15,7 @@ ensureDir($iconsDir);
 ensureDir($gamesDir);
 ensureProtectedDir($dataDir);
 ensureDir($dataDir . '/results');
+roomsDir($dataDir);
 
 // unique player id (cookie) — must run before any output
 $playerId = getOrCreatePlayerId();
@@ -30,6 +32,57 @@ $gameId          = null;
 $gamePrompt      = null;
 $gameModel       = null;
 $gameCreator     = null;
+
+// multiplayer state
+$mpEnabled    = isset($_GET['mp']) && (string) $_GET['mp'] === '1';
+$mpRoomCode   = isset($_GET['room']) ? strtoupper(preg_replace('/[^A-Z0-9]/i', '', (string) $_GET['room'])) : '';
+$mpRoom       = null;
+$mpRole       = 'guest';
+$mpIsHost     = false;
+$mpSeed       = '';
+$mpPlayerName = 'بازیکن';
+
+if ($mpEnabled && $mpRoomCode !== '') {
+    $mpRoom = loadRoom($dataDir, $mpRoomCode);
+    if ($mpRoom === null) {
+        $error     = 'اتاق چندنفره پیدا نشد یا منقضی شده است.';
+        $mpEnabled = false;
+    } else {
+        $found = false;
+        foreach ($mpRoom['players'] as $p) {
+            if (($p['id'] ?? '') === $playerId) {
+                $found        = true;
+                $mpRole       = $p['role'] ?? 'guest';
+                $mpPlayerName = $p['name'] ?? 'بازیکن';
+                break;
+            }
+        }
+        if (!$found) {
+            $errJoin = null;
+            $mpRoom  = joinRoom($dataDir, $mpRoomCode, $playerId, 'مهمان', $errJoin);
+            if ($mpRoom === null) {
+                $error     = $errJoin ?? 'نمی‌توانی به این اتاق بپیوندی.';
+                $mpEnabled = false;
+            } else {
+                foreach ($mpRoom['players'] as $p) {
+                    if (($p['id'] ?? '') === $playerId) {
+                        $mpRole       = $p['role'] ?? 'guest';
+                        $mpPlayerName = $p['name'] ?? 'بازیکن';
+                        break;
+                    }
+                }
+            }
+        }
+        if ($mpEnabled && $mpRoom) {
+            $mpIsHost = ($mpRole === 'host') || (($mpRoom['host_id'] ?? '') === $playerId);
+            $mpSeed   = (string) ($mpRoom['seed'] ?? '');
+            if (($mpRoom['status'] ?? '') !== 'playing' && ($mpRoom['status'] ?? '') !== 'finished') {
+                $mpRoom['status'] = 'playing';
+                saveRoom($dataDir, $mpRoom);
+            }
+        }
+    }
+}
 
 // -----------------------------------------------------------------
 // Endpoint: save a play result (called by the parent page when the
@@ -75,6 +128,12 @@ if (isset($_GET['id'])) {
             $gameModel   = getGameModel($gamesDir, $gameId);
             $gameCreator = getGameCreator($gamesDir, $gameId);
 
+            // inject multiplayer bridge into game HTML
+            if ($mpEnabled && $mpRoomCode !== '' && $mpSeed !== '') {
+                $bridge = buildMpBridgeScript($mpRoomCode, $playerId, $mpRole, $mpSeed, $mpIsHost);
+                $resultHtml = injectMpBridge($resultHtml, $bridge);
+            }
+
             if (!empty($_GET['missing'])) {
                 $missingSvgs = array_filter(explode(',', (string) $_GET['missing']));
             }
@@ -100,6 +159,9 @@ if (isset($_GET['id'])) {
     <title><?= htmlspecialchars($resultTitle ?? 'بازی') ?> | Mega Game</title>
     <script src="assets/axios.min.js"></script>
     <script src="assets/game-refine.js?v=<?= (int) @filemtime(__DIR__ . '/assets/game-refine.js') ?>"></script>
+    <?php if ($mpEnabled): ?>
+    <script src="assets/mp-client.js?v=<?= (int) @filemtime(__DIR__ . '/assets/mp-client.js') ?>"></script>
+    <?php endif; ?>
     <style>
         * { box-sizing: border-box; }
 
@@ -255,8 +317,59 @@ if (isset($_GET['id'])) {
         body.is-fullscreen .back-link,
         body.is-fullscreen .game-header,
         body.is-fullscreen .prompt-box,
-        body.is-fullscreen .error {
+        body.is-fullscreen .error,
+        body.is-fullscreen .mp-bar {
             display: none !important;
+        }
+
+        .mp-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding: 12px 16px;
+            margin-bottom: 14px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(139, 92, 246, 0.12));
+            border: 1px solid rgba(129, 140, 248, 0.35);
+            font-size: 0.9rem;
+        }
+        .mp-bar .mp-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .mp-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #64748b;
+            flex-shrink: 0;
+        }
+        .mp-dot.online { background: #34d399; box-shadow: 0 0 8px rgba(52, 211, 153, 0.6); }
+        .mp-dot.offline { background: #f87171; }
+        .mp-code {
+            font-weight: 700;
+            letter-spacing: 0.2em;
+            color: #a5b4fc;
+        }
+        .mp-scores {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            color: #cbd5e1;
+        }
+        .mp-scores span strong { color: #fbbf24; }
+        .icon-btn.mp-btn {
+            border-color: rgba(129, 140, 248, 0.45);
+            background: rgba(99, 102, 241, 0.2);
+            color: #c7d2fe;
+        }
+        .icon-btn.mp-btn:hover {
+            border-color: #a5b4fc;
+            background: rgba(99, 102, 241, 0.35);
         }
 
         body.is-fullscreen .game-frame-wrap {
@@ -324,8 +437,13 @@ if (isset($_GET['id'])) {
         <?php if ($resultHtml): ?>
 
             <div class="game-header">
-                <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?></h2>
+                <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?><?= $mpEnabled ? ' <span style="font-size:0.75em;color:#a5b4fc;">· چندنفره</span>' : '' ?></h2>
                 <div class="actions">
+                    <?php if (!$mpEnabled && $gameId): ?>
+                    <a class="icon-btn mp-btn" href="multiplayer.php?game=<?= urlencode($gameId) ?>" title="بازی چندنفره با دوستت">
+                        🌐 <span>بازی چندنفره</span>
+                    </a>
+                    <?php endif; ?>
                     <button type="button" class="icon-btn" data-game-refine="<?= htmlspecialchars($gameId) ?>" title="ویرایش و رفع باگ با هوش مصنوعی">
                         🛠️ <span>ویرایش و رفع باگ</span>
                     </button>
@@ -337,6 +455,17 @@ if (isset($_GET['id'])) {
                     </button>
                 </div>
             </div>
+
+            <?php if ($mpEnabled && $mpRoomCode): ?>
+            <div class="mp-bar" id="mpBar">
+                <div class="mp-left">
+                    <span class="mp-dot offline" id="mpDot" title="وضعیت اتصال"></span>
+                    <span>اتاق <span class="mp-code"><?= htmlspecialchars($mpRoomCode) ?></span></span>
+                    <span id="mpStatusText" style="color:#94a3b8;">در حال اتصال...</span>
+                </div>
+                <div class="mp-scores" id="mpScores"></div>
+            </div>
+            <?php endif; ?>
 
             <?php if (!empty($gameCreator)): ?>
                 <div class="prompt-box">
@@ -505,6 +634,117 @@ if (isset($_GET['id'])) {
                     exitFullscreen: exitFullscreen,
                     isFullscreen: isFullscreen
                 };
+
+                // ---- multiplayer (WebSocket) ----
+                <?php if ($mpEnabled && $mpRoomCode): ?>
+                (function initMp() {
+                    if (typeof MegaMpClient === 'undefined') return;
+
+                    const scoresEl = document.getElementById('mpScores');
+                    const statusEl = document.getElementById('mpStatusText');
+                    const dotEl = document.getElementById('mpDot');
+                    const myScores = {}; // playerId -> score
+
+                    function renderScores() {
+                        if (!scoresEl) return;
+                        const parts = [];
+                        Object.keys(myScores).forEach(function (pid) {
+                            const label = pid === <?= json_encode($playerId) ?> ? 'تو' : 'حریف';
+                            parts.push('<span>' + label + ': <strong>' + myScores[pid] + '</strong></span>');
+                        });
+                        scoresEl.innerHTML = parts.join('');
+                    }
+
+                    const client = new MegaMpClient({
+                        room: <?= json_encode($mpRoomCode) ?>,
+                        playerId: <?= json_encode($playerId) ?>,
+                        name: <?= json_encode($mpPlayerName) ?>,
+                        iframe: frame
+                    });
+
+                    client.attachIframeBridge(frame);
+
+                    client.on('open', function () {
+                        if (dotEl) {
+                            dotEl.classList.remove('offline');
+                            dotEl.classList.add('online');
+                        }
+                        if (statusEl) statusEl.textContent = 'متصل — منتظر همبازی...';
+                    });
+
+                    client.on('close', function () {
+                        if (dotEl) {
+                            dotEl.classList.remove('online');
+                            dotEl.classList.add('offline');
+                        }
+                        if (statusEl) statusEl.textContent = 'قطع شد — در حال اتصال مجدد...';
+                    });
+
+                    client.on('peers', function (peers) {
+                        const others = (peers || []).filter(function (p) {
+                            return p.id !== <?= json_encode($playerId) ?>;
+                        });
+                        if (statusEl) {
+                            if (others.length === 0) {
+                                statusEl.textContent = 'متصل — منتظر همبازی...';
+                            } else {
+                                const names = others.map(function (p) { return p.name || 'حریف'; }).join('، ');
+                                statusEl.textContent = 'همبازی آنلاین: ' + names;
+                            }
+                        }
+                    });
+
+                    client.on('event', function (msg) {
+                        if (!msg) return;
+                        if (msg.event === 'score' && msg.data) {
+                            myScores[msg.from] = msg.data.score;
+                            renderScores();
+                        }
+                        if (msg.event === 'finish' && msg.data) {
+                            if (typeof msg.data.score !== 'undefined') {
+                                myScores[msg.from] = msg.data.score;
+                                renderScores();
+                            }
+                            if (statusEl) {
+                                statusEl.textContent = 'حریف بازی را تمام کرد'
+                                    + (typeof msg.data.score !== 'undefined' ? ' (امتیاز: ' + msg.data.score + ')' : '');
+                            }
+                        }
+                    });
+
+                    // when local game reports score/finish via MegaMP or game-stats
+                    client.on('local_event', function (payload) {
+                        if (!payload) return;
+                        if (payload.event === 'score' && payload.data && typeof payload.data.score !== 'undefined') {
+                            myScores[<?= json_encode($playerId) ?>] = payload.data.score;
+                            renderScores();
+                        }
+                        if (payload.event === 'finish' && payload.data && typeof payload.data.score !== 'undefined') {
+                            myScores[<?= json_encode($playerId) ?>] = payload.data.score;
+                            renderScores();
+                        }
+                    });
+
+                    // also forward classic game-stats finish into MP channel
+                    window.addEventListener('message', function (e) {
+                        if (!frame || e.source !== frame.contentWindow) return;
+                        const d = e.data;
+                        if (!d || d.source !== 'game-stats' || d.type !== 'finish' || !d.payload) return;
+                        const score = d.payload.score != null ? d.payload.score : d.payload.final_score;
+                        client.sendEvent('finish', {
+                            score: score,
+                            payload: d.payload
+                        });
+                        if (score != null) {
+                            myScores[<?= json_encode($playerId) ?>] = score;
+                            renderScores();
+                        }
+                    });
+
+                    client.connect();
+                    window.MegaMp = client;
+                })();
+                <?php endif; ?>
             })();
         </script>
     <?php endif; ?>
