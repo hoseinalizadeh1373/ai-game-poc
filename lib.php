@@ -483,7 +483,7 @@ function buildCssJsManifest(string $css, string $js): string
 function injectSharedAssets(string $html, string $css, string $js): string
 {
     if ($js !== '') {
-        $jsBlock = "<script>\n" . $js . "\n</script>\n";
+        $jsBlock = "<script data-shared-assets>\n" . $js . "\n</script>\n";
         if (preg_match('/<head[^>]*>/i', $html)) {
             $html = preg_replace('/(<head[^>]*>)/i', '$1' . "\n" . $jsBlock, $html, 1);
         } elseif (preg_match('/<html[^>]*>/i', $html)) {
@@ -494,7 +494,7 @@ function injectSharedAssets(string $html, string $css, string $js): string
     }
 
     if ($css !== '') {
-        $cssBlock = "<style>\n" . $css . "\n</style>\n";
+        $cssBlock = "<style data-shared-assets>\n" . $css . "\n</style>\n";
         if (preg_match('/<\/head>/i', $html)) {
             $html = preg_replace('/(<\/head>)/i', $cssBlock . '$1', $html, 1);
         } elseif (preg_match('/<head[^>]*>/i', $html)) {
@@ -1041,4 +1041,314 @@ function releaseGenerationLock(string $lockFile): void
     if (file_exists($lockFile)) {
         @unlink($lockFile);
     }
+}
+
+// ---------------------------------------------------------------------
+// Game refinement ("Edit / fix bugs" feature)
+//
+// Everything below is UI-agnostic: it only knows about game ids, files
+// and the AI API. The HTTP endpoint (refine.php) and the front-end
+// widget (assets/game-refine.js) are thin layers on top of refineGame().
+// ---------------------------------------------------------------------
+
+/**
+ * Models the app is allowed to call: [api model id => human label].
+ * Used by the refine endpoint. (index.php still keeps its own copy for
+ * the "create" form — it can be switched to this function later.)
+ */
+function allowedModels(): array
+{
+    return [
+        'deepseek-v4.1-flash' => 'DeepSeek v4.1 Flash',
+        'claude-fable-5'      => 'Claude Fable 5',
+        'claude-sonnet-5'     => 'Claude Sonnet 5',
+        'gpt-6-sol'           => 'GPT-6 Sol',
+    ];
+}
+
+/**
+ * Removes the "<!-- USER_PROMPT: ... -->" / "<!-- MODEL_USED: ... -->"
+ * header comments written by saveGame(): they are our own metadata and
+ * would only confuse the reviewing model.
+ */
+function stripGameMetaComments(string $html): string
+{
+    return preg_replace('/<!--\s*(?:CREATOR|USER_PROMPT|MODEL_USED):.*?-->\s*/s', '', $html);
+}
+
+/**
+ * Removes the shared JS/CSS blocks that injectSharedAssets() put into a
+ * saved game, so the AI only sees (and rewrites) the game's own code.
+ * They are re-injected after the AI answers.
+ *
+ * New games carry a data-shared-assets marker; games saved before the
+ * marker existed are matched by their exact content instead.
+ */
+function stripSharedAssets(string $html, string $css, string $js): string
+{
+    // 1) blocks carrying the marker (games saved after the marker was added)
+    $html = preg_replace(
+        '/\s*<(script|style)\b[^>]*\bdata-shared-assets\b[^>]*>.*?<\/\1>\s*/is',
+        "\n",
+        $html
+    );
+
+    // 2) exact-content match (older games)
+    if ($js !== '') {
+        $html = str_replace("\n<script>\n" . $js . "\n</script>\n", "\n", $html);
+    }
+    if ($css !== '') {
+        $html = str_replace("<style>\n" . $css . "\n</style>\n", '', $html);
+    }
+
+    // 3) signature fallback: base.js/base.css were edited after the game
+    //    was created, so the exact text no longer matches
+    $html = preg_replace(
+        '/<script\b[^>]*>(?:(?!<\/script>).)*?window\.GameStats\s*=\s*\{.*?<\/script>\s*/is',
+        '',
+        $html,
+        1
+    );
+    $html = preg_replace(
+        '/<style\b[^>]*>\s*\/\*\s*Shared base styles auto-injected.*?<\/style>\s*/is',
+        '',
+        $html,
+        1
+    );
+
+    return $html;
+}
+
+/**
+ * The JS that create.php injects into every game: the GameStats runtime
+ * first, then the shared helpers from base.js.
+ */
+function buildSharedJs(string $baseJs): string
+{
+    return buildGameStatsRuntime() . "\n" . $baseJs;
+}
+
+/**
+ * Detects the classic lazy-model failure: answering with a placeholder
+ * such as "// ... rest of the code unchanged" instead of the full file.
+ * Saving such an answer would destroy the game.
+ */
+function looksAbbreviated(string $html): bool
+{
+    return (bool) preg_match(
+        '~(?:<!--|//|/\*)[^\n]{0,20}\b(?:rest of (?:the )?(?:code|game|script|file|html|css)|remains? (?:the same|unchanged)|unchanged|same as (?:before|above|original)|previous code)\b~i',
+        $html
+    );
+}
+
+function buildRefineSystemPrompt(string $cssJsManifest): string
+{
+    $template = <<<'PROMPT'
+You are a senior QA engineer and expert HTML5 game developer specializing in children's educational games (Persian, RTL). You are given an EXISTING game — one self-contained HTML document that was generated automatically by a weaker AI model and may contain hidden bugs — together with the original request it was built for.
+
+YOUR JOB
+Audit the game thoroughly and return a fully repaired and improved version of the SAME game. Keep its concept, theme, topic, target age and everything that already works. Fix what is broken; improve what is weak.
+
+HOW TO AUDIT
+Do not skim. Mentally EXECUTE the game from page load to the final win/lose/completion screen, then restart it and play it a second time. Read every line of JavaScript, every data array, every piece of markup and every CSS rule. Review ALL of the dimensions below.
+
+1. FUNCTIONALITY & JAVASCRIPT
+- Syntax errors, unbalanced braces/quotes/backticks, broken template strings, stray text outside tags.
+- Undefined variables/functions, typos in ids/classes, getElementById/querySelector calls that return null, wrong scope.
+- Script running before the DOM exists (missing DOMContentLoaded, or a script placed before the elements it queries).
+- Event listeners that are never attached, attached twice, lost after an innerHTML re-render, or inline handlers that reference missing functions.
+- Broken game flow: start -> play -> next question/level -> win/lose -> restart. Restart must fully reset ALL state (score, index, timers, lock flags, DOM).
+- Double-click/double-tap bugs, answers accepted after a round is locked, timers/intervals never cleared, off-by-one errors, endless loops, unreachable end screen.
+- Score / progress / lives counters that do not update or update wrongly.
+
+2. GAME DATA & CONTENT CORRECTNESS
+- Verify EVERY question/item/answer in the data one by one: is the marked correct answer really correct? Look for wrong facts, wrong spellings, wrong counts, wrong icon for the word.
+- Exactly one correct option per question; no two options that are both right; no duplicate options; distractors plausible but clearly wrong.
+- Content must match the original request (topic, age group, difficulty, number of items).
+- CORRECT-ANSWER POSITION: the correct option must NOT sit in the same slot every time (for example always the first of four options). Randomize the option order at render time and identify the correct option by its value/id — never by its original index. Also make sure the data itself does not systematically list the correct answer first.
+- Persian text quality: correct spelling, natural phrasing, consistent digits, proper half-space (ZWNJ).
+- Every <iconify-icon> name must be a real icon of the given set and must semantically match what it represents.
+
+3. LAYOUT & VISUAL DESIGN
+- Correct RTL behaviour (dir="rtl"): alignment, element order, progress bars, arrows/directional icons, mixed LTR/RTL text.
+- Responsive from 320px phones to desktop: no horizontal scroll, no overflow or cut-off content, no overlapping elements, sensible grid and text sizes.
+- Touch targets of at least 44px, good contrast, readable font sizes, clearly visible pressed / selected / correct / wrong states.
+- Overlays and modals: never invisible text (e.g. white on white), never blocking the game after being dismissed.
+- A consistent, minimal and chic look (spacing scale, rounded corners, soft shadows, cohesive palette). Nothing decorative without a purpose.
+- Resolve conflicts between Tailwind classes and custom CSS.
+
+4. STRUCTURE & CODE QUALITY
+- Clear separation: data (constants at the top) / state / rendering / event handling / helpers.
+- Remove dead code, duplicate functions and unused variables; use meaningful names; add short comments where helpful.
+- Keep ALL content in one easy-to-extend data structure.
+- Be robust: guard against null/empty data, wrap Audio code in try/catch, produce no console errors.
+
+5. UX & FEEDBACK
+- Clear instructions, immediate feedback for correct and wrong answers, an encouraging (never harsh) tone for children.
+- Sound effects work through the Web Audio API and are started only after a user gesture.
+- A clear end screen with the result and a working "play again" button.
+
+6. GAME STATISTICS (GameStats)
+- The platform injects a global GameStats object; it is NOT part of the code you see and must NEVER be defined, copied, wrapped or replaced by you.
+- Verify: GameStats.start({tracksErrors}) is called when the player presses Start AND every time they press Play again; GameStats.mistake() is called for every wrong answer/move (when tracksErrors is true) and never for correct ones; GameStats.finish({score,total,won}) is called exactly ONCE per play, when the final result screen appears; the final screen shows the time (m:ss) and, only when errors is not null, the mistake count.
+- The game must open with a start screen with a Start button and end with a result screen with a Play again button. Add or repair them if missing.
+
+7. RULES COMPLIANCE
+- The game must still satisfy every rule in the ORIGINAL GENERATION RULES at the end of this message (stack, allowed external resources, font, RTL, icons, sounds, forbidden items).
+
+HOW TO FIX
+- Fix every problem you find — do not just report it. If a part is fundamentally broken, rewrite that part properly.
+- Preserve everything that already works: same concept, same visual identity, same content unless it is incorrect. Never shrink the game, remove features, or replace content with placeholders.
+- If a human reviewer left notes, treat them as top-priority bugs: reproduce each one mentally and fix it, in addition to your own audit.
+- The helpers and CSS classes listed below are injected automatically into the final file after your answer, so they exist at runtime and you may use them without defining them. If the game already has its own equivalent function, keep the game's own version.
+
+AUTO-INJECTED SHARED HELPERS
+[[HELPERS]]
+
+FINAL SELF-CHECK (MANDATORY)
+Before answering, re-read your corrected code once more as a compiler and as a player. Only output it when: there are zero syntax errors, every listener fires, the whole flow works twice in a row, all data is verified, and the layout holds at 320px and at 1280px wide.
+
+OUTPUT FORMAT — STRICT
+- Output ONLY the complete corrected HTML document, from <!DOCTYPE html> to </html>.
+- Never abbreviate: no "rest of the code unchanged", no "...", no placeholders — the FULL file, every time.
+- No explanations, no markdown, no code fences, no text outside the HTML.
+- If you find the game already flawless, still return the complete document.
+
+=====================================================================
+ORIGINAL GENERATION RULES (the rules the game was built under — they still apply)
+=====================================================================
+PROMPT;
+
+    $helpers = $cssJsManifest !== '' ? $cssJsManifest : '(none)';
+
+    return str_replace('[[HELPERS]]', $helpers, $template)
+        . "\n\n" . buildSystemPrompt('', '');
+}
+
+function buildRefineUserMessage(string $gameHtml, string $originalPrompt, string $note): string
+{
+    $msg = '';
+
+    if ($originalPrompt !== '') {
+        $msg .= "ORIGINAL USER REQUEST (what this game was supposed to be):\n\"" . $originalPrompt . "\"\n\n";
+    }
+
+    $note = trim($note);
+    if ($note !== '') {
+        $msg .= "REVIEWER NOTES (known problems reported by a human — fix these first):\n" . $note . "\n\n";
+    }
+
+    $msg .= "Audit and fix the following game. Return the complete corrected HTML document only.\n\n"
+        . "<game_html>\n" . $gameHtml . "\n</game_html>";
+
+    return $msg;
+}
+
+/**
+ * Sends a saved game to the AI for a full review + bug-fix pass and
+ * saves the result — either as a NEW game (default, original untouched)
+ * or over the same id ($replace = true; the previous version is copied
+ * to games/.history/ first).
+ *
+ * The original game is never modified unless the AI returned a complete,
+ * plausible document.
+ *
+ * @return array{ok:bool, error:?string, gameId:?string, replaced:bool, hadExtraText:bool}
+ */
+function refineGame(
+    array $config,
+    string $assetsDir,
+    string $gamesDir,
+    string $gameId,
+    ?string $model = null,
+    string $note = '',
+    bool $replace = false
+): array {
+    $dataDir = dirname($gamesDir) . '/data';
+
+    $fail = function (string $msg): array {
+        return ['ok' => false, 'error' => $msg, 'gameId' => null, 'replaced' => false, 'hadExtraText' => false];
+    };
+
+    if (!preg_match('/^[A-Za-z0-9_\-]+$/', $gameId)) {
+        return $fail('شناسه بازی نامعتبر است.');
+    }
+
+    $original = loadGame($gamesDir, $gameId);
+    if ($original === null) {
+        return $fail('بازی مورد نظر پیدا نشد.');
+    }
+
+    if ($model === null || !isset(allowedModels()[$model])) {
+        $model = $config['model'] ?? 'deepseek-v4.1-flash';
+    }
+
+    $userPrompt = getGamePrompt($gamesDir, $gameId) ?? '';
+    $prevModel  = getGameModel($gamesDir, $gameId) ?? '';
+    $creator    = getGameCreator($gamesDir, $gameId) ?? '';
+
+    $baseCss = loadBaseCss($assetsDir);
+    $baseJs  = loadBaseJs($assetsDir);
+    $sharedJs = buildSharedJs($baseJs);
+
+    // what the AI sees: only the game's own code
+    $clean = stripSharedAssets(stripGameMetaComments($original), $baseCss, $sharedJs);
+
+    $apiResult = callAiApi(
+        $config,
+        buildRefineSystemPrompt(buildCssJsManifest($baseCss, $baseJs)),
+        buildRefineUserMessage($clean, $userPrompt, $note),
+        $model
+    );
+    if (!$apiResult['ok']) {
+        return $fail($apiResult['error']);
+    }
+
+    [$text, $hadExtraText] = extractHtmlDocument(trim($apiResult['text']));
+
+    if ($text === null) {
+        return $fail('AI بازی ویرایش‌شده را به صورت HTML معتبر برنگرداند. بازی اصلی دست‌نخورده ماند.');
+    }
+    if (!preg_match('/<\/html\s*>/i', $text)) {
+        return $fail('پاسخ AI ناقص بود (احتمالاً وسط کار قطع شده). بازی اصلی دست‌نخورده ماند.');
+    }
+    if (strlen($text) < strlen($clean) * 0.4 || looksAbbreviated($text)) {
+        return $fail('AI به‌جای بازی کامل، نسخهٔ خلاصه‌شده برگرداند. بازی اصلی دست‌نخورده ماند؛ دوباره تلاش کنید یا مدل قوی‌تری انتخاب کنید.');
+    }
+
+    // the platform's GameStats must stay the single source of truth
+    if (preg_match('/window\.GameStats\s*=|(?:var|let|const)\s+GameStats\b/', $text)) {
+        return $fail('AI تعریف GameStats را دستکاری کرد و نتیجه پذیرفته نشد. بازی اصلی دست‌نخورده ماند؛ دوباره تلاش کنید.');
+    }
+
+    // same post-processing pipeline as a freshly created game
+    [$text] = applySvgPlaceholders($text, scanIconAssets($assetsDir . '/icons'));
+    $text   = normalizeFontPath($text);
+    $text   = injectSharedAssets($text, $baseCss, $sharedJs);
+
+    if ($replace) {
+        $historyDir = $gamesDir . '/.history';
+        ensureDir($historyDir);
+        $backup = $historyDir . '/' . $gameId . '_' . date('Ymd_His') . '.html';
+        if (!@copy($gamesDir . '/' . $gameId . '.html', $backup)) {
+            return $fail('پشتیبان‌گیری از نسخهٔ قبلی ناموفق بود؛ بازی جایگزین نشد.');
+        }
+        $newId = $gameId;
+    } else {
+        $newId = newGameId();
+    }
+
+    $modelUsed = $prevModel !== '' ? $prevModel . ' → ' . $model : $model;
+    saveGame($gamesDir, $newId, $text, $userPrompt, $modelUsed, $creator);
+    if (!$replace) {
+        initGameResultsFile($dataDir, $gamesDir, $newId);
+    }
+
+    return [
+        'ok'           => true,
+        'error'        => null,
+        'gameId'       => $newId,
+        'replaced'     => $replace,
+        'hadExtraText' => $hadExtraText,
+    ];
 }

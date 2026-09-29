@@ -99,6 +99,7 @@ if (isset($_GET['id'])) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= htmlspecialchars($resultTitle ?? 'بازی') ?> | Mega Game</title>
     <script src="assets/axios.min.js"></script>
+    <script src="assets/game-refine.js?v=<?= (int) @filemtime(__DIR__ . '/assets/game-refine.js') ?>"></script>
     <style>
         * { box-sizing: border-box; }
 
@@ -325,6 +326,9 @@ if (isset($_GET['id'])) {
             <div class="game-header">
                 <h2>🎮 <?= htmlspecialchars($resultTitle ?? 'بازی') ?></h2>
                 <div class="actions">
+                    <button type="button" class="icon-btn" data-game-refine="<?= htmlspecialchars($gameId) ?>" title="ویرایش و رفع باگ با هوش مصنوعی">
+                        🛠️ <span>ویرایش و رفع باگ</span>
+                    </button>
                     <button type="button" class="icon-btn" id="reloadBtn" title="شروع دوباره بازی">
                         🔄 <span>شروع دوباره</span>
                     </button>
