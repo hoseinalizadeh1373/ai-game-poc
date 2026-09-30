@@ -611,23 +611,18 @@ OUTPUT FORMAT — STRICT
 TECHNICAL STACK
 - HTML5 + Tailwind CSS (via CDN) + vanilla JavaScript only.
 - Allowed external resources ONLY:
-  1. Tailwind CSS CDN: <script src="https://cdn.tailwindcss.com"></script>
-  2. Local Iconify: <script src="assets/iconify-icon.min.js"></script>
+  1. Local Tailwind CSS, in <head> BEFORE any other script: <script src="assets/3.4.17"></script>
+  2. Local Iconify, in <head>: <script src="assets/iconify-icon.min.js"></script>
   3. Local Vazir font (via @font-face)
 - Fully playable game with real logic, score (when relevant), and clear win/lose/completion state.
 - The game language is Persian (RTL). Always set dir="rtl" and lang="fa" on the <html> tag.
 
 TAILWIND CSS — REQUIRED
-1. Always include this exact script in <head> BEFORE any other scripts:
-<script src="https://cdn.tailwindcss.com"></script>
-
-2. Use Tailwind utility classes for ALL layout, spacing, colors, typography, and responsiveness.
-3. Prefer Tailwind over writing custom CSS. Only write minimal custom CSS when absolutely necessary (animations, complex keyframes).
-4. Mobile-first responsive design is mandatory:
+1. Use Tailwind utility classes for ALL layout, spacing, colors, typography, and responsiveness. Write custom CSS only when absolutely necessary (animations, complex keyframes).
+2. Mobile-first responsive design is mandatory:
    - Base styles for mobile
    - Use sm:, md:, lg: breakpoints for larger screens
    - Game must look excellent on phones (320px+), tablets, and desktops
-5. Use flex, grid, gap, padding, rounded-*, shadow-*, and modern Tailwind patterns.
 
 VISUAL DESIGN — MINIMAL & CHIC
 - Clean, modern, minimal aesthetic with generous whitespace.
@@ -635,8 +630,6 @@ VISUAL DESIGN — MINIMAL & CHIC
 - Large touch targets (min 44px).
 - Rounded corners (rounded-xl, rounded-2xl).
 - Subtle shadows and soft transitions.
-- Clear visual hierarchy.
-- Avoid visual clutter. Every element must have purpose.
 - Center the main game area nicely on larger screens.
 - Use consistent spacing scale (p-4, p-6, gap-4, gap-6...).
 
@@ -660,13 +653,10 @@ body {
 ICON SYSTEM — ICONIFY (COLORED ICONS)
 You must use Iconify for every icon.
 
-1. Always include this exact script in the <head>:
-<script src="assets/iconify-icon.min.js"></script>
-
-2. Use icons with the web component:
+1. Use icons with the web component:
 <iconify-icon icon="collection:icon-name" class="text-4xl"></iconify-icon>
 
-3. Strongly prefer colored icon sets:
+2. Strongly prefer colored icon sets:
 - twemoji
 - emojione
 - noto
@@ -721,35 +711,8 @@ FORBIDDEN
 - Using <img src="assets/icons/...">
 - Using {{SVG:...}} placeholders
 - Using monotone icons when colored versions exist
-- Using any other CDN or external links (except the required Tailwind CDN)
-- Using external audio files
-- Defining, redefining, or replacing GameStats
-- Sending any data to a server yourself (fetch, XMLHttpRequest, localStorage, cookies)
-- Calling GameStats.finish() more than once per play
-- Broken or incomplete JavaScript
-- Syntax errors of any kind
 
-CRITICAL — SELF-CHECK BEFORE OUTPUT (MANDATORY)
-You MUST mentally verify the entire code before returning it. Only output the final HTML if ALL of the following are true:
-
-1. JavaScript has zero syntax errors
-2. All event listeners are correctly attached and will fire
-3. Game logic is complete and works end-to-end (start → play → win/lose)
-4. No undefined variables or missing function references
-5. Tailwind script is present and all classes are valid
-6. Iconify script is present and every icon uses <iconify-icon>
-7. Vazir font is loaded and applied
-8. html has dir="rtl" and lang="fa"
-9. Layout is fully responsive (mobile + desktop)
-10. Sound effects exist and are called correctly
-11. No <svg> tags exist
-12. The game is actually playable and fun
-13. A start screen with a Start button exists, and GameStats.start() is called when it (and Play again) is pressed
-14. GameStats.mistake() is called for every wrong action (when tracksErrors is true)
-15. GameStats.finish() is called exactly once when the game ends, and its time (and errors, if not null) are shown on the final screen
-16. GameStats is never defined or redefined in the code
-
-If anything is broken or incomplete, fix it completely before outputting. Never return half-working code.
+Before answering, verify that the JavaScript has no syntax errors, all listeners are attached, and the game works end-to-end (start → play → win/lose → play again). Fix anything broken; never return half-working code.
 
 Return only the final HTML document.
 PROMPT;
@@ -765,8 +728,6 @@ PROMPT;
  */
 function callAiApi(array $config, string $systemPrompt, string $userMessage, ?string $modelOverride = null): array
 {
-
-    
     $model = $modelOverride ?: ($config['model'] ?? 'gapgpt-qwen-3.6');
 
     $payload = [
@@ -776,6 +737,14 @@ function callAiApi(array $config, string $systemPrompt, string $userMessage, ?st
             ['role' => 'user', 'content' => $userMessage],
         ],
     ];
+    // optional knobs from config.php (omitted when not set). No output cap is ever sent.
+    if (isset($config['temperature'])) {
+        $payload['temperature'] = (float) $config['temperature'];
+    }
+    // extra request fields for deepseek models only (e.g. the switch that turns thinking off)
+    if (!empty($config['extra_body']) && is_array($config['extra_body']) && stripos($model, 'deepseek') !== false) {
+        $payload = array_merge($payload, $config['extra_body']);
+    }
 
     $ch = curl_init($config['api_url']);
 
@@ -808,6 +777,30 @@ function callAiApi(array $config, string $systemPrompt, string $userMessage, ?st
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
+    // a gateway/model that rejects an optional field: retry once without it
+    if ($httpCode === 400) {
+        $knobs = array_merge(array_keys((array) ($config['extra_body'] ?? [])), ['temperature']);
+        foreach ($knobs as $knob) {
+            if (isset($payload[$knob]) && stripos((string) $response, (string) $knob) !== false) {
+                if ($knob === 'temperature') {
+                    unset($config['temperature']);
+                } else {
+                    unset($config['extra_body'][$knob]);
+                }
+                return callAiApi($config, $systemPrompt, $userMessage, $modelOverride);
+            }
+        }
+        // the error does not name the culprit: drop temperature first, then the extra fields
+        if (isset($config['temperature'])) {
+            unset($config['temperature']);
+            return callAiApi($config, $systemPrompt, $userMessage, $modelOverride);
+        }
+        if (!empty($config['extra_body'])) {
+            unset($config['extra_body']);
+            return callAiApi($config, $systemPrompt, $userMessage, $modelOverride);
+        }
+    }
+
     if ($httpCode < 200 || $httpCode >= 300) {
         return ['ok' => false, 'text' => null, 'error' => "API Error ($httpCode): " . $response];
     }
@@ -828,7 +821,36 @@ function callAiApi(array $config, string $systemPrompt, string $userMessage, ?st
         return ['ok' => false, 'text' => null, 'error' => 'نتوانستم متن بازی تولیدشده را از پاسخ AI استخراج کنم.'];
     }
 
-    return ['ok' => true, 'text' => $text, 'error' => null];
+    return [
+        'ok'    => true,
+        'text'  => $text,
+        'error' => null,
+        'usage' => is_array($data['usage'] ?? null) ? $data['usage'] : null,
+        // optional fields that were really in the final request (e.g. thinking, temperature)
+        'opt'   => array_values(array_diff(array_keys($payload), ['model', 'messages'])),
+    ];
+}
+
+/**
+ * Appends one line per API call to data/usage.log so real token usage can
+ * be measured (prompt / completion / cached tokens).
+ */
+function logApiUsage(string $dataDir, string $kind, string $model, ?array $usage, ?array $opt = null): void
+{
+    ensureProtectedDir($dataDir);
+    $row = [
+        't'          => date('c'),
+        'kind'       => $kind,
+        'model'      => $model,
+        'prompt'     => $usage['prompt_tokens'] ?? null,
+        'completion' => $usage['completion_tokens'] ?? null,
+        'total'      => $usage['total_tokens'] ?? null,
+        'cached'     => $usage['prompt_tokens_details']['cached_tokens']
+                        ?? $usage['prompt_cache_hit_tokens'] ?? null,
+        'reasoning'  => $usage['completion_tokens_details']['reasoning_tokens'] ?? null,
+        'opt'        => $opt, // fields sent besides model+messages; "thinking" must be here to turn thinking off
+    ];
+    @file_put_contents($dataDir . '/usage.log', json_encode($row, JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND | LOCK_EX);
 }
 
 // ---------------------------------------------------------------------
@@ -1059,7 +1081,8 @@ function releaseGenerationLock(string $lockFile): void
 function allowedModels(): array
 {
     return [
-        'deepseek-v4.1-flash' => 'DeepSeek v4.1 Flash',
+        'deepseek-v4-flash'   => 'DeepSeek v4 Flash (بدون thinking)',
+        'deepseek-v4.1-flash' => 'DeepSeek v4.1 Flash (با thinking)',
         'claude-fable-5'      => 'Claude Fable 5',
         'claude-sonnet-5'     => 'Claude Sonnet 5',
         'gpt-6-sol'           => 'GPT-6 Sol',
@@ -1141,88 +1164,48 @@ function looksAbbreviated(string $html): bool
     );
 }
 
-function buildRefineSystemPrompt(string $cssJsManifest): string
+function buildRefineSystemPrompt(string $cssJsManifest, bool $allowEdits = true): string
 {
     $template = <<<'PROMPT'
-You are a senior QA engineer and expert HTML5 game developer specializing in children's educational games (Persian, RTL). You are given an EXISTING game — one self-contained HTML document that was generated automatically by a weaker AI model and may contain hidden bugs — together with the original request it was built for.
+You are a senior QA engineer and HTML5 game developer for children's educational games (Persian, RTL). You get an EXISTING game (one HTML document made by a weaker AI, may contain bugs) plus its original request. Fix bugs and weak spots; keep the concept, theme, content and everything that works. Never shrink the game or remove features.
 
-YOUR JOB
-Audit the game thoroughly and return a fully repaired and improved version of the SAME game. Keep its concept, theme, topic, target age and everything that already works. Fix what is broken; improve what is weak.
+AUDIT (read the code once, following the flow from load to the result screen and Play again):
+1. JS: syntax errors, undefined names, null querySelector results, scripts running before the DOM exists, listeners lost after innerHTML re-render, restart not resetting ALL state, double-tap bugs, uncleared timers, wrong score/progress. Movement games: y grows DOWN (gravity adds to vy, jump sets vy negative), no object may start or drift outside the play area, collision boxes must use one coordinate system, direction buttons and play area need dir="ltr" (RTL reverses them), GameStats.mistake() on every failure.
+2. DATA: verify EVERY question/answer (facts, spelling, exactly one correct option, no duplicates, icon matches the word) and that it matches the request. The correct option must not sit in a fixed slot: shuffle at render time and identify the answer by value/id, not index.
+3. LAYOUT: RTL correctness, 320px to desktop without overflow/overlap, touch targets >=44px, contrast, no invisible text, modals dismiss properly.
+4. UX: clear instructions, immediate encouraging feedback, Web Audio only after a user gesture (in try/catch), start screen and result screen with working buttons.
+5. GameStats (injected global; never define/copy/wrap it): start({tracksErrors}) on Start and on every Play again; mistake() per wrong attempt; finish({score,total,won}) exactly once per play; result screen shows time m:ss and, only if errors!==null, "تعداد خطا".
+6. RULES: Tailwind CDN, local Iconify + Vazir font, dir="rtl" lang="fa", real colored <iconify-icon> names, no <svg>, no other external resources, no fetch/localStorage/cookies.
 
-HOW TO AUDIT
-Do not skim. Mentally EXECUTE the game from page load to the final win/lose/completion screen, then restart it and play it a second time. Read every line of JavaScript, every data array, every piece of markup and every CSS rule. Review ALL of the dimensions below.
-
-1. FUNCTIONALITY & JAVASCRIPT
-- Syntax errors, unbalanced braces/quotes/backticks, broken template strings, stray text outside tags.
-- Undefined variables/functions, typos in ids/classes, getElementById/querySelector calls that return null, wrong scope.
-- Script running before the DOM exists (missing DOMContentLoaded, or a script placed before the elements it queries).
-- Event listeners that are never attached, attached twice, lost after an innerHTML re-render, or inline handlers that reference missing functions.
-- Broken game flow: start -> play -> next question/level -> win/lose -> restart. Restart must fully reset ALL state (score, index, timers, lock flags, DOM).
-- Double-click/double-tap bugs, answers accepted after a round is locked, timers/intervals never cleared, off-by-one errors, endless loops, unreachable end screen.
-- Score / progress / lives counters that do not update or update wrongly.
-
-2. GAME DATA & CONTENT CORRECTNESS
-- Verify EVERY question/item/answer in the data one by one: is the marked correct answer really correct? Look for wrong facts, wrong spellings, wrong counts, wrong icon for the word.
-- Exactly one correct option per question; no two options that are both right; no duplicate options; distractors plausible but clearly wrong.
-- Content must match the original request (topic, age group, difficulty, number of items).
-- CORRECT-ANSWER POSITION: the correct option must NOT sit in the same slot every time (for example always the first of four options). Randomize the option order at render time and identify the correct option by its value/id — never by its original index. Also make sure the data itself does not systematically list the correct answer first.
-- Persian text quality: correct spelling, natural phrasing, consistent digits, proper half-space (ZWNJ).
-- Every <iconify-icon> name must be a real icon of the given set and must semantically match what it represents.
-
-3. LAYOUT & VISUAL DESIGN
-- Correct RTL behaviour (dir="rtl"): alignment, element order, progress bars, arrows/directional icons, mixed LTR/RTL text.
-- Responsive from 320px phones to desktop: no horizontal scroll, no overflow or cut-off content, no overlapping elements, sensible grid and text sizes.
-- Touch targets of at least 44px, good contrast, readable font sizes, clearly visible pressed / selected / correct / wrong states.
-- Overlays and modals: never invisible text (e.g. white on white), never blocking the game after being dismissed.
-- A consistent, minimal and chic look (spacing scale, rounded corners, soft shadows, cohesive palette). Nothing decorative without a purpose.
-- Resolve conflicts between Tailwind classes and custom CSS.
-
-4. STRUCTURE & CODE QUALITY
-- Clear separation: data (constants at the top) / state / rendering / event handling / helpers.
-- Remove dead code, duplicate functions and unused variables; use meaningful names; add short comments where helpful.
-- Keep ALL content in one easy-to-extend data structure.
-- Be robust: guard against null/empty data, wrap Audio code in try/catch, produce no console errors.
-
-5. UX & FEEDBACK
-- Clear instructions, immediate feedback for correct and wrong answers, an encouraging (never harsh) tone for children.
-- Sound effects work through the Web Audio API and are started only after a user gesture.
-- A clear end screen with the result and a working "play again" button.
-
-6. GAME STATISTICS (GameStats)
-- The platform injects a global GameStats object; it is NOT part of the code you see and must NEVER be defined, copied, wrapped or replaced by you.
-- Verify: GameStats.start({tracksErrors}) is called when the player presses Start AND every time they press Play again; GameStats.mistake() is called for every wrong answer/move (when tracksErrors is true) and never for correct ones; GameStats.finish({score,total,won}) is called exactly ONCE per play, when the final result screen appears; the final screen shows the time (m:ss) and, only when errors is not null, the mistake count.
-- The game must open with a start screen with a Start button and end with a result screen with a Play again button. Add or repair them if missing.
-
-7. RULES COMPLIANCE
-- The game must still satisfy every rule in the ORIGINAL GENERATION RULES at the end of this message (stack, allowed external resources, font, RTL, icons, sounds, forbidden items).
-
-HOW TO FIX
-- Fix every problem you find — do not just report it. If a part is fundamentally broken, rewrite that part properly.
-- Preserve everything that already works: same concept, same visual identity, same content unless it is incorrect. Never shrink the game, remove features, or replace content with placeholders.
-- If a human reviewer left notes, treat them as top-priority bugs: reproduce each one mentally and fix it, in addition to your own audit.
-- The helpers and CSS classes listed below are injected automatically into the final file after your answer, so they exist at runtime and you may use them without defining them. If the game already has its own equivalent function, keep the game's own version.
-
-AUTO-INJECTED SHARED HELPERS
+Reviewer notes, if given, come first.
+Injected helpers (usable without defining them):
 [[HELPERS]]
 
-FINAL SELF-CHECK (MANDATORY)
-Before answering, re-read your corrected code once more as a compiler and as a player. Only output it when: there are zero syntax errors, every listener fires, the whole flow works twice in a row, all data is verified, and the layout holds at 320px and at 1280px wide.
-
-OUTPUT FORMAT — STRICT
-- Output ONLY the complete corrected HTML document, from <!DOCTYPE html> to </html>.
-- Never abbreviate: no "rest of the code unchanged", no "...", no placeholders — the FULL file, every time.
-- No explanations, no markdown, no code fences, no text outside the HTML.
-- If you find the game already flawless, still return the complete document.
-
-=====================================================================
-ORIGINAL GENERATION RULES (the rules the game was built under — they still apply)
-=====================================================================
+[[OUTPUT]]
 PROMPT;
 
-    $helpers = $cssJsManifest !== '' ? $cssJsManifest : '(none)';
+    $outEdits = <<<'OUT'
+OUTPUT - choose ONE, no explanations, markdown or code fences:
+A) Preferred whenever the fixes can be written as edits (even many edits, e.g. layout, sizing, positions, logic, data): return ONLY edit blocks:
+<edit><find>exact existing text, copied verbatim</find><replace>new text</replace></edit>
+- copy <find> character for character from the game (1-3 whole lines is ideal); it must occur exactly once, so add a neighbouring line if needed
+- no extra newline right after <find> or <replace>; an empty <replace> deletes the text; use as many edits as needed
+Example: <edit><find>if (score > total) {</find><replace>if (score >= total) {</replace></edit>
+B) Only when more than about a third of the code must change: return the COMPLETE document from <!DOCTYPE html> to </html>, never abbreviated.
+If nothing needs fixing return only <nochange/>. Never mix A and B.
+OUT;
 
-    return str_replace('[[HELPERS]]', $helpers, $template)
-        . "\n\n" . buildSystemPrompt('', '');
+    $outFull = <<<'OUT'
+OUTPUT: only the COMPLETE corrected document from <!DOCTYPE html> to </html>. Never abbreviate ("rest unchanged", "...", placeholders). No explanations, markdown or code fences.
+OUT;
+
+    $helpers = trim($cssJsManifest) !== '' ? $cssJsManifest : '(none)';
+
+    return str_replace(
+        ['[[HELPERS]]', '[[OUTPUT]]'],
+        [$helpers, $allowEdits ? $outEdits : $outFull],
+        $template
+    );
 }
 
 function buildRefineUserMessage(string $gameHtml, string $originalPrompt, string $note): string
@@ -1242,6 +1225,142 @@ function buildRefineUserMessage(string $gameHtml, string $originalPrompt, string
         . "<game_html>\n" . $gameHtml . "\n</game_html>";
 
     return $msg;
+}
+
+// ---------------------------------------------------------------------
+// Edit-block mode for refine: the model returns small <edit> patches
+// instead of the whole document (far fewer output tokens).
+// ---------------------------------------------------------------------
+
+function trimOneNewline(string $s): string
+{
+    $s = str_replace("\r\n", "\n", $s);
+    if (substr($s, 0, 1) === "\n") {
+        $s = substr($s, 1);
+    }
+    if (substr($s, -1) === "\n") {
+        $s = substr($s, 0, -1);
+    }
+    return $s;
+}
+
+/**
+ * @return array<int,array{0:string,1:string}> list of [find, replace]
+ */
+function parseEditBlocks(string $raw): array
+{
+    $edits = [];
+    if (preg_match_all('~<edit>\s*<find>(.*?)</find>\s*<replace>(.*?)</replace>\s*</edit>~s', $raw, $m, PREG_SET_ORDER)) {
+        foreach ($m as $x) {
+            $edits[] = [trimOneNewline($x[1]), trimOneNewline($x[2])];
+        }
+    }
+    return $edits;
+}
+
+/**
+ * All-or-nothing: applies every edit in order; if ANY edit is missing or
+ * ambiguous the whole batch is rejected (returns [null, reason]).
+ * Falls back to a whitespace-tolerant match when the exact text is not found.
+ *
+ * @return array{0:?string,1:?string} [patched html, error reason]
+ */
+function applyEdits(string $html, array $edits): array
+{
+    foreach ($edits as $i => $edit) {
+        [$find, $rep] = $edit;
+        $n = $i + 1;
+
+        if (trim($find) === '') {
+            return [null, "edit #$n has an empty <find>"];
+        }
+
+        $count = substr_count($html, $find);
+        if ($count === 1) {
+            $pos  = strpos($html, $find);
+            $html = substr_replace($html, $rep, $pos, strlen($find));
+            continue;
+        }
+        if ($count > 1) {
+            return [null, "edit #$n matches $count places"];
+        }
+
+        // not found verbatim: retry ignoring differences in whitespace
+        $tokens = preg_split('/\s+/u', trim($find), -1, PREG_SPLIT_NO_EMPTY);
+        if (!$tokens) {
+            return [null, "edit #$n not found"];
+        }
+        $pattern = '/' . implode('\s+', array_map(fn($t) => preg_quote($t, '/'), $tokens)) . '/u';
+        $found   = preg_match_all($pattern, $html, $mm, PREG_OFFSET_CAPTURE);
+        if ($found === 1) {
+            $html = substr_replace($html, $rep, $mm[0][0][1], strlen($mm[0][0][0]));
+            continue;
+        }
+        return [null, $found > 1 ? "edit #$n matches $found places" : "edit #$n not found"];
+    }
+    return [$html, null];
+}
+
+function findNodeBinary(): ?string
+{
+    static $bin = false;
+    if ($bin !== false) {
+        return $bin;
+    }
+    $bin = null;
+    if (!function_exists('exec')) {
+        return null;
+    }
+    $disabled = array_map('trim', explode(',', (string) ini_get('disable_functions')));
+    if (in_array('exec', $disabled, true)) {
+        return null;
+    }
+    $out = [];
+    $code = 1;
+    @exec('command -v node 2>/dev/null', $out, $code);
+    if ($code === 0 && !empty($out[0])) {
+        $bin = trim($out[0]);
+    }
+    return $bin;
+}
+
+/**
+ * Syntax-checks every inline classic <script> with `node --check`.
+ * Returns an error text, or null when everything parses OR node is not
+ * available on the server (the check is then silently skipped).
+ */
+function jsSyntaxError(string $html): ?string
+{
+    $node = findNodeBinary();
+    if ($node === null) {
+        return null;
+    }
+    if (!preg_match_all('~<script\b([^>]*)>(.*?)</script>~is', $html, $m, PREG_SET_ORDER)) {
+        return null;
+    }
+    foreach ($m as $i => $sc) {
+        $attrs = $sc[1];
+        $code  = $sc[2];
+        if (preg_match('/\bsrc\s*=/i', $attrs) || trim($code) === '') {
+            continue;
+        }
+        if (preg_match('/\btype\s*=\s*["\']?([^"\'\s>]+)/i', $attrs, $t)
+            && !preg_match('~^(text|application)/(javascript|ecmascript)$~i', $t[1])) {
+            continue; 
+        }
+        $file = tempnam(sys_get_temp_dir(), 'gjs');
+        $js   = $file . '.js';
+        @rename($file, $js);
+        file_put_contents($js, $code);
+        $out = [];
+        $rc  = 0;
+        @exec(escapeshellarg($node) . ' --check ' . escapeshellarg($js) . ' 2>&1', $out, $rc);
+        @unlink($js);
+        if ($rc !== 0) {
+            return 'script #' . ($i + 1) . ': ' . substr(implode("\n", $out), 0, 300);
+        }
+    }
+    return null;
 }
 
 /**
@@ -1280,7 +1399,7 @@ function refineGame(
     }
 
     if ($model === null || !isset(allowedModels()[$model])) {
-        $model = $config['model'] ?? 'deepseek-v4.1-flash';
+        $model = $config['model'] ?? 'deepseek-v4-flash';
     }
 
     $userPrompt = getGamePrompt($gamesDir, $gameId) ?? '';
@@ -1290,30 +1409,80 @@ function refineGame(
     $baseCss = loadBaseCss($assetsDir);
     $baseJs  = loadBaseJs($assetsDir);
     $sharedJs = buildSharedJs($baseJs);
+    $manifest = buildCssJsManifest($baseCss, $baseJs);
 
-    // what the AI sees: only the game's own code
-    $clean = stripSharedAssets(stripGameMetaComments($original), $baseCss, $sharedJs);
+    // what the AI sees: only the game's own code (LF endings, so <find> texts match)
+    $clean   = stripSharedAssets(stripGameMetaComments($original), $baseCss, $sharedJs);
+    $cleanLf = str_replace("\r\n", "\n", $clean);
+    $userMsg = buildRefineUserMessage($cleanLf, $userPrompt, $note);
 
-    $apiResult = callAiApi(
-        $config,
-        buildRefineSystemPrompt(buildCssJsManifest($baseCss, $baseJs)),
-        buildRefineUserMessage($clean, $userPrompt, $note),
-        $model
-    );
-    if (!$apiResult['ok']) {
-        return $fail($apiResult['error']);
+    $text         = null;
+    $hadExtraText = false;
+
+    // pass 0: model may answer with small <edit> patches (cheap)
+    // pass 1: fallback - complete rewrite (only reached when pass 0 could not be used)
+    for ($pass = 0; $pass < 2 && $text === null; $pass++) {
+        $allowEdits = ($pass === 0);
+
+        $apiResult = callAiApi($config, buildRefineSystemPrompt($manifest, $allowEdits), $userMsg, $model);
+        $kind = $allowEdits ? 'refine-edit' : 'refine-full';
+        $log  = function (string $outcome) use ($dataDir, $kind, $model, $apiResult): void {
+            logApiUsage($dataDir, $kind . ':' . $outcome, $model, $apiResult['usage'] ?? null, $apiResult['opt'] ?? null);
+        };
+        if (!$apiResult['ok']) {
+            return $fail($apiResult['error']);
+        }
+        $raw = trim($apiResult['text']);
+
+        if ($allowEdits) {
+            $edits = parseEditBlocks($raw);
+
+            if (!$edits && preg_match('~<nochange\s*/?>~i', $raw) && !preg_match('/<!doctype\s+html/i', $raw)) {
+                $log('nochange');
+                return $fail('AI مشکلی در بازی پیدا نکرد؛ بازی بدون تغییر ماند.');
+            }
+
+            if ($edits) {
+                [$patched, $why] = applyEdits($cleanLf, $edits);
+                if ($patched === null) {
+                    $log('edits-not-applicable');
+                    continue; // fallback to full rewrite
+                }
+                if (jsSyntaxError($patched) !== null && jsSyntaxError($cleanLf) === null) {
+                    $log('edits-broke-js');
+                    continue; // patches broke the JS: fallback to full rewrite
+                }
+                $log('edits-ok(' . count($edits) . ')');
+                $text = $patched;
+                break;
+            }
+            // no edit blocks: the model chose to return a full document -> validate below
+            $log('full-document');
+        } else {
+            $log('done');
+        }
+
+        [$doc, $extra] = extractHtmlDocument($raw);
+
+        if ($doc === null) {
+            if ($allowEdits) {
+                continue;
+            }
+            return $fail('AI بازی ویرایش‌شده را به صورت HTML معتبر برنگرداند. بازی اصلی دست‌نخورده ماند.');
+        }
+        if (!preg_match('/<\/html\s*>/i', $doc)) {
+            return $fail('پاسخ AI ناقص بود (احتمالاً وسط کار قطع شده). بازی اصلی دست‌نخورده ماند.');
+        }
+        if (strlen($doc) < strlen($clean) * 0.4 || looksAbbreviated($doc)) {
+            return $fail('AI به‌جای بازی کامل، نسخهٔ خلاصه‌شده برگرداند. بازی اصلی دست‌نخورده ماند؛ دوباره تلاش کنید یا مدل قوی‌تری انتخاب کنید.');
+        }
+
+        $text         = $doc;
+        $hadExtraText = $extra;
     }
-
-    [$text, $hadExtraText] = extractHtmlDocument(trim($apiResult['text']));
 
     if ($text === null) {
-        return $fail('AI بازی ویرایش‌شده را به صورت HTML معتبر برنگرداند. بازی اصلی دست‌نخورده ماند.');
-    }
-    if (!preg_match('/<\/html\s*>/i', $text)) {
-        return $fail('پاسخ AI ناقص بود (احتمالاً وسط کار قطع شده). بازی اصلی دست‌نخورده ماند.');
-    }
-    if (strlen($text) < strlen($clean) * 0.4 || looksAbbreviated($text)) {
-        return $fail('AI به‌جای بازی کامل، نسخهٔ خلاصه‌شده برگرداند. بازی اصلی دست‌نخورده ماند؛ دوباره تلاش کنید یا مدل قوی‌تری انتخاب کنید.');
+        return $fail('AI تغییرات قابل‌اعمالی برنگرداند. بازی اصلی دست‌نخورده ماند؛ دوباره تلاش کنید.');
     }
 
     // the platform's GameStats must stay the single source of truth

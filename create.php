@@ -29,6 +29,58 @@ $hadExtraText    = false;
 $gameId          = null;
 
 // -----------------------------------------------------------------
+// Model metadata — descriptive UI info for each model.
+// Keys must match allowedModels() ids. Unknown ids get a generic card.
+// speed / quality are 1..5 (shown as mini meters).
+// -----------------------------------------------------------------
+$modelMeta = [
+    'deepseek-v4-flash' => [
+        'icon'    => '⚡',
+        'desc'    => 'سریع‌ترین گزینه؛ برای بازی‌های ساده و متوسط عالی است و در کمترین زمان آماده می‌شود.',
+        'speed'   => 5,
+        'quality' => 2,
+        'tags'    => ['کوییز', 'حافظه', 'واکنش سریع'],
+        'badge'   => 'پیشنهادی',
+    ],
+    'claude-fable-5' => [
+        'icon'    => '🎨',
+        'desc'    => 'خلاق و داستان‌محور؛ برای ماجراجویی، روایت تعاملی و بازی‌های سناریومحور.',
+        'speed'   => 3,
+        'quality' => 4,
+        'tags'    => ['ماجراجویی', 'داستانی', 'نقش‌آفرینی'],
+        'badge'   => null,
+    ],
+    'claude-sonnet-5' => [
+        'icon'    => '🧠',
+        'desc'    => 'متعادل و دقیق؛ برای بازی‌های آموزشی با منطق چندلایه و سوالات پیچیده.',
+        'speed'   => 3,
+        'quality' => 5,
+        'tags'    => ['آموزشی', 'پازل', 'استراتژی'],
+        'badge'   => null,
+    ],
+    'gpt-6-sol' => [
+        'icon'    => '✨',
+        'desc'    => 'پیشرفته و همه‌کاره؛ برای پیچیده‌ترین بازی‌ها با مکانیک‌های متعدد و گرافیک غنی.',
+        'speed'   => 2,
+        'quality' => 5,
+        'tags'    => ['همه‌کاره', 'حرفه‌ای', 'گرافیکی'],
+        'badge'   => null,
+    ],
+];
+
+$modelFallback = [
+    'icon'    => '🎮',
+    'desc'    => 'اطلاعات این مدل به‌زودی اضافه می‌شود.',
+    'speed'   => 3,
+    'quality' => 3,
+    'tags'    => [],
+    'badge'   => null,
+];
+
+$speedLabels   = [1 => 'خیلی کند', 2 => 'کند', 3 => 'متوسط', 4 => 'خوب', 5 => 'عالی'];
+$qualityLabels = [1 => 'ضعیف',     2 => 'پایه', 3 => 'خوب',   4 => 'خیلی خوب', 5 => 'عالی'];
+
+// -----------------------------------------------------------------
 // Action: create a new game
 // -----------------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -36,11 +88,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $userPrompt = trim($_POST['prompt'] ?? '');
     $creator    = sanitizeCreatorName((string) ($_POST['creator'] ?? ''));
     $count      = isset($_POST['count']) && $_POST['count'] !== '' ? (int) $_POST['count'] : null;
-    $selectedModel = $_POST['model'] ?? 'deepseek-v4.1-flash';
+    $selectedModel = $_POST['model'] ?? 'deepseek-v4-flash';
 
-    $allowedModels = ['deepseek-v4.1-flash', 'claude-fable-5', 'claude-sonnet-5', 'gpt-6-sol'];
+    $allowedModels = array_keys(allowedModels());
     if (!in_array($selectedModel, $allowedModels, true)) {
-        $selectedModel = 'deepseek-v4.1-flash';
+        $selectedModel = 'deepseek-v4-flash';
     }
     if ($count !== null) {
         if ($count < 1)  $count = 1;
@@ -53,7 +105,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'لطفاً نام کاربری خود را وارد کنید.';
     } else {
 
-        // Only ONE generation at a time (see lib.php for details)
         $lockFile = $dataDir . '/.generation.lock';
         $lock = acquireGenerationLock($lockFile);
 
@@ -68,12 +119,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cssJsManifest  = buildCssJsManifest($baseCss, $baseJs);
                 $systemPrompt   = buildSystemPrompt($svgManifest, $cssJsManifest);
 
-                $userMessage = 'درخواست کاربر: "' . $userPrompt . '"';
+                $userMessage = 'USER REQUEST: "' . $userPrompt . '"';
                 if ($count !== null) {
-                    $userMessage .= "\n" . 'تعداد سوال/آیتم پیشنهادی (در صورتی که این نوع بازی به آن نیاز دارد): ' . $count;
+                    $userMessage .= "\n" . 'Suggested number of questions/items (only if this game type needs it): ' . $count;
                 }
 
                 $apiResult = callAiApi($config, $systemPrompt, $userMessage, $selectedModel);
+                logApiUsage($dataDir, 'create', (string) ($selectedModel ?: ($config['model'] ?? '')), $apiResult['usage'] ?? null, $apiResult['opt'] ?? null);
                 if (!$apiResult['ok']) {
                     $error = $apiResult['error'];
                 } else {
@@ -85,23 +137,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $error = 'AI بازی را به صورت HTML معتبر برنگرداند.';
                     } else {
 
-                        // must run BEFORE substitution: a compliant model's raw output
-                        // never contains a literal "<svg" tag (only {{SVG:id}} placeholders)
                         $handDrawnCount = countHandDrawnSvg($text);
-
                         [$text, $missingSvgs] = applySvgPlaceholders($text, $icons);
-
-                        // must run AFTER substitution: anything still matching "{{SVG"
-                        // at this point means the placeholder was built dynamically
                         $brokenSvgCount = countBrokenSvgPlaceholders($text);
-
-                        // must run on the RAW model output, before we inject our own
-                        // <style> — otherwise we'd also match our own shared rules
                         $classCollisions = detectSharedClassCollisions($text, $baseCss);
 
-                        // fix up whatever path the model wrote for the Vazir font
                         $text = normalizeFontPath($text);
-                        // GameStats runtime goes first, so it is defined before any AI code
                         $text = injectSharedAssets($text, $baseCss, buildGameStatsRuntime() . "\n" . $baseJs);
 
                         $title = extractGameTitle($text, $userPrompt);
@@ -117,7 +158,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // AJAX requests get a small JSON response instead of the full page
     $isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH'])
         && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
 
@@ -167,7 +207,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .container {
-            max-width: 720px;
+            max-width: 860px;
             margin: 0 auto;
             padding: 40px 24px 80px;
         }
@@ -216,11 +256,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
         }
 
-        .form-card label {
+        .form-card label.field-label {
             display: block;
             color: #94a3b8;
             font-size: 0.9rem;
-            margin-bottom: 8px;
+            margin-bottom: 10px;
         }
 
         .form-card select,
@@ -253,19 +293,212 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             line-height: 1.6;
         }
 
-        .field { margin-bottom: 18px; }
+        .field { margin-bottom: 22px; }
 
         .form-row {
             display: flex;
             flex-wrap: wrap;
             gap: 16px;
-            margin-top: 16px;
             align-items: flex-end;
         }
 
         .form-row .field { flex: 1; min-width: 140px; margin-bottom: 0; }
 
         .form-row input[type="number"] { max-width: 120px; }
+
+        /* ============================================================
+           Compact horizontal model rows — full width, one per line
+           ============================================================ */
+        .model-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .model-row {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1.5px solid rgba(148, 163, 184, 0.14);
+            background: rgba(15, 23, 42, 0.5);
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s, box-shadow 0.2s, transform 0.15s;
+            user-select: none;
+        }
+
+        .model-row input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .model-row:hover {
+            border-color: rgba(129, 140, 248, 0.4);
+            background: rgba(15, 23, 42, 0.75);
+        }
+
+        .model-row.is-selected,
+        .model-row:has(input:checked) {
+            border-color: #818cf8;
+            background: linear-gradient(90deg, rgba(99, 102, 241, 0.14), rgba(139, 92, 246, 0.04));
+            box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.12), 0 4px 16px rgba(99, 102, 241, 0.15);
+        }
+
+        .model-row:has(input:focus-visible) {
+            outline: 2px solid #a5b4fc;
+            outline-offset: 2px;
+        }
+
+        /* --- radio dot --- */
+        .model-dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid rgba(148, 163, 184, 0.45);
+            flex-shrink: 0;
+            position: relative;
+            transition: border-color 0.2s;
+        }
+
+        .model-dot::after {
+            content: '';
+            position: absolute;
+            inset: 3px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            opacity: 0;
+            transform: scale(0);
+            transition: opacity 0.2s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .model-row.is-selected .model-dot,
+        .model-row:has(input:checked) .model-dot {
+            border-color: #a5b4fc;
+        }
+
+        .model-row.is-selected .model-dot::after,
+        .model-row:has(input:checked) .model-dot::after {
+            opacity: 1;
+            transform: scale(1);
+        }
+
+        /* --- icon --- */
+        .model-icon {
+            font-size: 1.3rem;
+            line-height: 1;
+            flex-shrink: 0;
+            width: 32px;
+            text-align: center;
+        }
+
+        /* --- info block (name + tags) --- */
+        .model-info {
+            flex: 1 1 auto;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .model-info-top {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .model-name {
+            font-weight: 600;
+            font-size: 0.92rem;
+            color: #f1f5f9;
+            white-space: nowrap;
+        }
+
+        .model-badge {
+            padding: 2px 8px;
+            border-radius: 99px;
+            font-size: 0.65rem;
+            font-weight: 700;
+            color: #fff;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            box-shadow: 0 2px 6px rgba(99, 102, 241, 0.4);
+            white-space: nowrap;
+        }
+
+        .model-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .model-tags .tag {
+            padding: 1px 7px;
+            border-radius: 99px;
+            font-size: 0.65rem;
+            color: #a5b4fc;
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(129, 140, 248, 0.2);
+            white-space: nowrap;
+        }
+
+        /* --- mini meters on the left --- */
+        .model-meters {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex-shrink: 0;
+            width: 110px;
+        }
+
+        .mini-meter {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.65rem;
+            color: #94a3b8;
+        }
+
+        .mini-meter .mini-icon {
+            width: 12px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .mini-track {
+            flex: 1;
+            height: 4px;
+            border-radius: 99px;
+            background: rgba(148, 163, 184, 0.15);
+            overflow: hidden;
+        }
+
+        .mini-fill {
+            height: 100%;
+            border-radius: 99px;
+            background: linear-gradient(90deg, #22c55e, #84cc16);
+            transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .mini-fill.quality {
+            background: linear-gradient(90deg, #6366f1, #a855f7);
+        }
+
+        /* On mobile the mini-meters drop below the info */
+        @media (max-width: 560px) {
+            .model-row {
+                flex-wrap: wrap;
+            }
+            .model-meters {
+                width: 100%;
+                margin-top: 2px;
+                padding-right: 56px; /* align under info */
+            }
+        }
+
+        /* ------------------------------------------------------------ */
 
         button[type="submit"] {
             margin-top: 24px;
@@ -317,6 +550,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .container { padding: 24px 16px 60px; }
             .form-card { padding: 20px; }
         }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                transition-duration: 0.001ms !important;
+                animation-duration: 0.001ms !important;
+            }
+        }
     </style>
 </head>
 
@@ -337,7 +577,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <form id="createGameForm">
 
                 <div class="field">
-                    <label for="creator">نام کاربری شما (سازنده بازی)</label>
+                    <label class="field-label" for="creator">نام کاربری شما (سازنده بازی)</label>
                     <input
                         type="text"
                         name="creator"
@@ -348,17 +588,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
 
                 <div class="field">
-                    <label for="model">مدل هوش مصنوعی</label>
-                    <select name="model" id="model">
-                        <option value="deepseek-v4.1-flash">DeepSeek v4.1 Flash (پیشنهادی)</option>
-                        <option value="claude-fable-5">Claude Fable 5</option>
-                        <option value="claude-sonnet-5">Claude Sonnet 5</option>
-                        <option value="gpt-6-sol">GPT-6 Sol</option>
-                    </select>
+                    <label class="field-label">مدل هوش مصنوعی</label>
+
+                    <div class="model-list" id="modelList">
+                        <?php foreach (allowedModels() as $mid => $mlabel): ?>
+                            <?php
+                                $meta = $modelMeta[$mid] ?? $modelFallback;
+                                $isDefault = ($mid === 'deepseek-v4-flash');
+                                $speed = max(1, min(5, (int) $meta['speed']));
+                                $quality = max(1, min(5, (int) $meta['quality']));
+                                $speedPct = $speed * 20;
+                                $qualityPct = $quality * 20;
+                                $speedText = $speedLabels[$speed] ?? '—';
+                                $qualityText = $qualityLabels[$quality] ?? '—';
+
+                                $tooltip = $mlabel . ' — ' . $meta['desc']
+                                    . "\n\nسرعت: " . $speedText
+                                    . "\nکیفیت: " . $qualityText;
+                            ?>
+                            <label
+                                class="model-row<?= $isDefault ? ' is-selected' : '' ?>"
+                                data-model="<?= htmlspecialchars($mid) ?>"
+                                title="<?= htmlspecialchars($tooltip, ENT_QUOTES) ?>">
+
+                                <input
+                                    type="radio"
+                                    name="model"
+                                    value="<?= htmlspecialchars($mid) ?>"
+                                    <?= $isDefault ? 'checked' : '' ?>>
+
+                                <span class="model-dot" aria-hidden="true"></span>
+                                <span class="model-icon" aria-hidden="true"><?= htmlspecialchars($meta['icon']) ?></span>
+
+                                <div class="model-info">
+                                    <div class="model-info-top">
+                                        <span class="model-name"><?= htmlspecialchars($mlabel) ?></span>
+                                        <?php if (!empty($meta['badge'])): ?>
+                                            <span class="model-badge"><?= htmlspecialchars($meta['badge']) ?></span>
+                                        <?php endif; ?>
+                                    </div>
+
+                                    <?php if (!empty($meta['tags'])): ?>
+                                        <div class="model-tags">
+                                            <?php foreach ($meta['tags'] as $tag): ?>
+                                                <span class="tag"><?= htmlspecialchars($tag) ?></span>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+
+                                <div class="model-meters" aria-hidden="true">
+                                    <div class="mini-meter">
+                                        <span class="mini-icon">⚡</span>
+                                        <div class="mini-track">
+                                            <div class="mini-fill" style="width: <?= $speedPct ?>%"></div>
+                                        </div>
+                                    </div>
+                                    <div class="mini-meter">
+                                        <span class="mini-icon">✨</span>
+                                        <div class="mini-track">
+                                            <div class="mini-fill quality" style="width: <?= $qualityPct ?>%"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </label>
+                        <?php endforeach; ?>
+                    </div>
                 </div>
 
                 <div class="field">
-                    <label for="prompt">توضیح بازی</label>
+                    <label class="field-label" for="prompt">توضیح بازی</label>
                     <textarea
                         name="prompt"
                         id="prompt"
@@ -367,7 +666,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="form-row">
                     <div class="field">
-                        <label for="count">تعداد سوال / آیتم (اختیاری)</label>
+                        <label class="field-label" for="count">تعداد سوال / آیتم (اختیاری)</label>
                         <input
                             type="number"
                             id="count"
@@ -397,19 +696,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <script>
         const createGameForm = document.getElementById('createGameForm');
         if (createGameForm) {
-            // remember the creator name on this browser (convenience only)
+
+            // ---------- model rows: sync .is-selected (JS fallback for :has) ----------
+            const modelRows = document.querySelectorAll('.model-row');
+            const modelRadios = document.querySelectorAll('input[name="model"]');
+
+            function syncSelected() {
+                modelRows.forEach(function(row) {
+                    const radio = row.querySelector('input[name="model"]');
+                    if (radio && radio.checked) {
+                        row.classList.add('is-selected');
+                    } else {
+                        row.classList.remove('is-selected');
+                    }
+                });
+            }
+            modelRadios.forEach(function(r) {
+                r.addEventListener('change', syncSelected);
+            });
+            syncSelected();
+
+            // ---------- remember the creator name on this browser ----------
             try {
                 const savedName = localStorage.getItem('creatorName');
                 const ci = document.getElementById('creator');
                 if (savedName && ci && !ci.value) ci.value = savedName;
             } catch (e) {}
 
+            // ---------- submit ----------
             createGameForm.addEventListener('submit', async function(e) {
                 e.preventDefault();
 
                 const promptInput = document.getElementById('prompt');
                 const countInput = document.getElementById('count');
-                const modelSelect = document.getElementById('model');
                 const btn = document.getElementById('submitBtn');
                 const loading = document.getElementById('loading');
                 const errorBox = document.getElementById('ajaxError');
@@ -417,7 +736,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 const prompt = promptInput.value.trim();
                 const creator = document.getElementById('creator').value.trim();
                 const count = countInput.value;
-                const model = modelSelect.value;
+
+                const modelRadio = document.querySelector('input[name="model"]:checked');
+                const model = modelRadio ? modelRadio.value : 'deepseek-v4-flash';
 
                 errorBox.style.display = 'none';
                 errorBox.textContent = '';
@@ -454,7 +775,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     const data = response.data;
 
                     if (data.ok && data.gameId) {
-                        // redirect straight to the play page for the new game
                         let url = 'play.php?id=' + encodeURIComponent(data.gameId);
                         if (data.missingSvgs && data.missingSvgs.length) {
                             url += '&missing=' + encodeURIComponent(data.missingSvgs.join(','));

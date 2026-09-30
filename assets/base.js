@@ -17,3 +17,15 @@ function launchConfetti(count){count=count||30;const colors=['#f87171','#fbbf24'
 
 // @helper vibrateDevice(ms) — safely triggers device vibration feedback if supported, does nothing otherwise
 function vibrateDevice(ms){if(navigator.vibrate)navigator.vibrate(ms||100);}
+
+// @helper clamp(v,min,max) — limits a number to the range min..max
+function clamp(v,min,max){return Math.max(min,Math.min(max,v));}
+
+// @helper rectsOverlap(a,b) — true when two boxes {x,y,w,h} overlap (screen coordinates: x right, y DOWN)
+function rectsOverlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}
+
+// @helper stepBody(b,dt,groundY) — one physics step (dt in seconds) for a body {x,y,w,h,vx,vy}: y grows DOWN, adds gravity to vy, moves x/y, lands on the floor line groundY and sets b.onGround
+function stepBody(b,dt,groundY){b.vy=(b.vy||0)+2000*dt;b.x+=(b.vx||0)*dt;b.y+=b.vy*dt;b.onGround=false;if(b.y+b.h>=groundY){b.y=groundY-b.h;b.vy=0;b.onGround=true;}}
+
+// @helper jumpBody(b,speed) — makes a body jump upwards (speed about 700-800) only if b.onGround
+function jumpBody(b,speed){if(b.onGround){b.vy=-speed;b.onGround=false;}}
